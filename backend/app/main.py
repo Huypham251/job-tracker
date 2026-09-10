@@ -1,6 +1,9 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
+from app.applications.exceptions import ApplicationNotFound
+from app.applications.router import router as applications_router
 from app.core.config import settings
 
 
@@ -15,9 +18,17 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.exception_handler(ApplicationNotFound)
+    async def handle_application_not_found(
+        request: Request, exc: ApplicationNotFound
+    ) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    app.include_router(applications_router, prefix="/api/v1")
 
     return app
 
