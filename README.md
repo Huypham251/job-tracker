@@ -38,13 +38,11 @@ which it creates automatically on first run if the role can create databases.
 ```bash
 brew services start postgresql@16
 
-# create the role (superuser is simplest for local dev; -s lets the
-# test suite create jobtracker_test itself)
-psql postgres -c "CREATE ROLE jobtracker WITH LOGIN PASSWORD 'jobtracker' CREATEDB CREATEROLE;"
+# create the role — CREATEDB lets the test suite create jobtracker_test itself
+psql postgres -c "CREATE ROLE jobtracker WITH LOGIN PASSWORD 'jobtracker' CREATEDB;"
 
-# create the databases
+# create the development database
 createdb -O jobtracker jobtracker
-createdb -O jobtracker jobtracker_test
 ```
 
 Verify: `psql "postgresql://jobtracker:jobtracker@localhost:5432/jobtracker" -c "select 1"`

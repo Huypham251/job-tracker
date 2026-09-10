@@ -53,7 +53,28 @@ def test_patch_updates_only_status(client: TestClient) -> None:
     body = response.json()
     assert body["status"] == "offer"
     assert body["company"] == "A"
-    assert body["updated_at"] >= created["updated_at"]
+    assert body["updated_at"] > created["updated_at"]
+
+
+def test_patch_clears_applied_at_with_null(client: TestClient) -> None:
+    created = client.post(
+        BASE, json={"company": "A", "position": "P", "applied_at": "2026-09-01"}
+    ).json()
+    assert created["applied_at"] == "2026-09-01"
+    response = client.patch(f"{BASE}/{created['id']}", json={"applied_at": None})
+    assert response.status_code == 200
+    assert response.json()["applied_at"] is None
+
+
+def test_patch_omitting_applied_at_leaves_it_unchanged(client: TestClient) -> None:
+    created = client.post(
+        BASE, json={"company": "A", "position": "P", "applied_at": "2026-09-01"}
+    ).json()
+    response = client.patch(f"{BASE}/{created['id']}", json={"status": "offer"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "offer"
+    assert body["applied_at"] == "2026-09-01"
 
 
 def test_patch_empty_body_returns_422(client: TestClient) -> None:
