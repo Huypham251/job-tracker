@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .venv/
 backend/.env
+.python-version
 
 # Node
 node_modules/
