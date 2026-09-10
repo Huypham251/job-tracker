@@ -46,8 +46,13 @@ export function useApplications() {
 
   const remove = useCallback(
     async (id: string) => {
-      await api.deleteApplication(id)
-      await refetch()
+      setError(null)
+      try {
+        await api.deleteApplication(id)
+        await refetch()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to delete application')
+      }
     },
     [refetch],
   )
