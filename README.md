@@ -11,6 +11,7 @@ Full design: `docs/superpowers/specs/2026-09-09-job-tracker-phase-1-design.md`
 - PostgreSQL 16 running locally, **or** Docker + Docker Compose
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)
 - Node 20+
+- A Google Cloud project with OAuth credentials — see "Google OAuth setup" below (placeholder credentials are enough to run tests, not to log in)
 
 ## Project layout
 
@@ -77,6 +78,34 @@ npm run dev
 App: http://localhost:5173 — the Vite dev server proxies `/api` to the backend
 on port 8000.
 
+## Google OAuth setup (required for login)
+
+The app ships with placeholder Google credentials that let the backend
+start and the automated tests pass, but they cannot complete a real
+sign-in. To actually log in through the browser:
+
+1. Go to <https://console.cloud.google.com/> and create (or select) a project.
+2. **APIs & Services → OAuth consent screen.** Choose "External", fill in
+   an app name and your email as support/developer contact, save. While
+   the app is in "Testing" mode, add your own Google account under "Test
+   users" — only test users can complete the OAuth flow before the app is
+   published/verified.
+3. **APIs & Services → Credentials → Create Credentials → OAuth client ID.**
+   Application type: "Web application".
+4. Under "Authorized redirect URIs", add exactly:
+   `http://localhost:8000/api/v1/auth/google/callback`
+5. Create it. Copy the generated Client ID and Client Secret.
+6. In `backend/.env`, replace the placeholder values:
+   ```
+   GOOGLE_CLIENT_ID=<your client id>
+   GOOGLE_CLIENT_SECRET=<your client secret>
+   ```
+7. Generate a real `SECRET_KEY` if you haven't already:
+   `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`
+8. Restart the backend. Open <http://localhost:5173>, click "Sign in with
+   Google", approve the consent screen, and you should land back on the
+   dashboard signed in.
+
 ## Database migrations
 
 ```bash
@@ -98,6 +127,11 @@ Postgres instance (created automatically on first run). Each test executes
 inside a transaction that is rolled back afterward — via SQLAlchemy's
 `join_transaction_mode="create_savepoint"`, so a test calling `db.commit()`
 still leaves no data behind.
+
+Auth tests mint a valid session cookie directly (via the same JWT helper
+the real login flow uses) rather than driving an actual Google OAuth
+round-trip — the suite never makes a network call to a real Google
+endpoint.
 
 Frontend production build:
 
