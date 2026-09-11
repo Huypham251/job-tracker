@@ -340,6 +340,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - Create: `backend/app/users/models.py`
 - Create: `backend/app/users/schemas.py`
 - Modify: `backend/alembic/env.py` (register the new model)
+- Modify: `backend/tests/conftest.py` (register the new model for `Base.metadata.drop_all()`)
 - Create: `backend/alembic/versions/0002_create_users.py`
 
 **Interfaces:**
@@ -372,13 +373,13 @@ class User(TimestampMixin, Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    google_sub: Mapped[str] = mapped_column(
-        String(255), nullable=False, unique=True, index=True
-    )
+    google_sub: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     picture_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 ```
+
+`unique=True` alone (not `unique=True, index=True`) on both columns — that combination makes SQLAlchemy emit a unique `Index` in metadata instead of a `UniqueConstraint`, which won't match the migration's `create_unique_constraint` below and shows up as spurious drift on every future `alembic revision --autogenerate`. A unique constraint already creates a unique btree index in Postgres under the hood, so the separate `index=True` bought nothing anyway.
 
 Task 5 adds the `applications` relationship here (and `Application.owner` on the other side) in the same commit that adds `Application.user_id` — see Task 5 Step 2a.
 
@@ -408,6 +409,22 @@ from app.applications import models  # noqa: F401  (register models on Base.meta
 Replace with:
 ```python
 from app.applications import models  # noqa: F401  (register models on Base.metadata)
+from app.users import models as _user_models  # noqa: F401
+```
+
+- [ ] **Step 4a: Also register `User` in `backend/tests/conftest.py`**
+
+`Base.metadata.drop_all(eng)` in the `engine` fixture only knows about tables whose model module has actually been imported into the process. `conftest.py` currently only imports `app.applications.models` — leaving `users` un-registered means a *second* consecutive `pytest` run in the same environment will crash with `DuplicateTable: users` (the first run's `users` table survives `drop_all`, then the migration tries to create it again). Any task that adds a mapped model must register it here too, not just in `alembic/env.py`.
+
+Find:
+```python
+# Models must be imported so their tables are registered on Base.metadata.
+from app.applications import models  # noqa: F401
+```
+Replace with:
+```python
+# Models must be imported so their tables are registered on Base.metadata.
+from app.applications import models  # noqa: F401
 from app.users import models as _user_models  # noqa: F401
 ```
 
@@ -485,15 +502,19 @@ uv run alembic revision --autogenerate -m "drift check"
 ```
 Expected: the generated file's `upgrade()`/`downgrade()` are empty (`pass`). Delete it: `rm backend/alembic/versions/*drift_check*.py`.
 
-- [ ] **Step 9: Run the backend suite (should be untouched by this task)**
+- [ ] **Step 9: Run the backend suite TWICE in a row**
 
-Run: `cd backend && uv run pytest -q`
-Expected: `29 passed` — this task doesn't change `conftest.py` further or touch `applications`, so nothing should move. (The `engine` fixture from Task 2 will now also apply migration `0002` as part of "upgrade to head," which just means an empty, unused `users` table exists during tests — harmless.)
+```bash
+cd backend
+uv run pytest -q
+uv run pytest -q
+```
+Expected: `29 passed` both times. Running it twice specifically catches the `DuplicateTable` failure mode Step 4a exists to prevent — a single run alone would pass even without Step 4a's fix (the first run always starts from whatever state the DB happens to be in). This task doesn't change any test assertion or touch `applications`, so the count itself shouldn't move — only the schema-building mechanics underneath it just grew to include `users`.
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add backend/app/users backend/alembic/env.py backend/alembic/versions/0002_create_users.py
+git add backend/app/users backend/alembic/env.py backend/alembic/versions/0002_create_users.py backend/tests/conftest.py
 git commit -m "feat(backend): add User model and users table migration
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
@@ -1076,9 +1097,7 @@ class User(TimestampMixin, Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    google_sub: Mapped[str] = mapped_column(
-        String(255), nullable=False, unique=True, index=True
-    )
+    google_sub: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     picture_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
