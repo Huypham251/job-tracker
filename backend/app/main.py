@@ -12,6 +12,17 @@ from app.core.config import settings
 def create_app() -> FastAPI:
     app = FastAPI(title="Job Application Tracker", version="0.1.0")
 
+    # Used only for the few seconds of the OAuth state/nonce handshake —
+    # entirely separate from the app's own access_token cookie. Added
+    # before CORSMiddleware so CORS ends up outermost (add_middleware
+    # makes the last-added middleware outermost).
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.secret_key,
+        max_age=300,
+        https_only=settings.cookie_secure,
+        same_site="lax",
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
@@ -19,9 +30,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    # Used only for the few seconds of the OAuth state/nonce handshake —
-    # entirely separate from the app's own access_token cookie.
-    app.add_middleware(SessionMiddleware, secret_key=settings.secret_key)
 
     @app.exception_handler(ApplicationNotFound)
     async def handle_application_not_found(

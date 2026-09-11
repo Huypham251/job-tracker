@@ -25,8 +25,10 @@ ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
 
 _dev_url = make_url(settings.database_url)
 TEST_DB_NAME = f"{_dev_url.database}_test"
-TEST_DATABASE_URL = str(_dev_url.set(database=TEST_DB_NAME))
-ADMIN_URL = str(_dev_url.set(database="postgres", drivername="postgresql"))
+TEST_DATABASE_URL = _dev_url.set(database=TEST_DB_NAME).render_as_string(hide_password=False)
+ADMIN_URL = _dev_url.set(
+    database="postgres", drivername="postgresql"
+).render_as_string(hide_password=False)
 
 
 def _ensure_test_database() -> None:

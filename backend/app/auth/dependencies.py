@@ -19,7 +19,7 @@ def get_current_user(
         )
     try:
         user_id = decode_access_token(access_token)
-    except jwt.PyJWTError:
+    except (jwt.PyJWTError, KeyError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session"
         )

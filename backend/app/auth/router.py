@@ -1,6 +1,8 @@
+from authlib.integrations.base_client import OAuthError
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import COOKIE_NAME, get_current_user
@@ -22,7 +24,13 @@ async def google_login(request: Request):
 
 @router.get("/google/callback", name="google_callback")
 async def google_callback(request: Request, db: Session = Depends(get_db)):
-    token = await oauth.google.authorize_access_token(request)
+    try:
+        token = await oauth.google.authorize_access_token(request)
+    except OAuthError:
+        # Consent declined, expired/replayed state, or a token-exchange
+        # failure — send the user back to the login screen instead of a 500.
+        return RedirectResponse(url=settings.frontend_url)
+
     claims = token["userinfo"]
 
     user = db.scalars(
@@ -40,7 +48,13 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
         user.email = claims["email"]
         user.name = claims.get("name") or claims["email"]
         user.picture_url = claims.get("picture")
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Someone else already owns this email (e.g. a different Google
+        # account now shares it) — fail closed, don't crash.
+        db.rollback()
+        return RedirectResponse(url=settings.frontend_url)
     db.refresh(user)
 
     access_token = create_access_token(user.id)
@@ -64,5 +78,7 @@ def get_me(current_user: User = Depends(get_current_user)) -> User:
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout() -> Response:
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
-    response.delete_cookie(key=COOKIE_NAME, samesite="lax")
+    response.delete_cookie(
+        key=COOKIE_NAME, httponly=True, samesite="lax", secure=settings.cookie_secure
+    )
     return response

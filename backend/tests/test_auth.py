@@ -2,6 +2,13 @@ from fastapi.testclient import TestClient
 
 from app.auth.dependencies import COOKIE_NAME
 
+from datetime import datetime, timedelta, timezone
+
+import jwt as pyjwt
+
+from app.auth.jwt import create_access_token
+from app.core.config import settings
+
 
 def test_me_without_cookie_returns_401(client: TestClient) -> None:
     response = client.get("/api/v1/auth/me")
@@ -21,6 +28,58 @@ def test_me_with_valid_cookie_returns_user(auth_client: TestClient, user) -> Non
     assert body["id"] == str(user.id)
     assert body["email"] == user.email
     assert body["name"] == user.name
+
+
+def test_expired_token_returns_401(client: TestClient, user) -> None:
+    expired_payload = {
+        "sub": str(user.id),
+        "exp": datetime.now(timezone.utc) - timedelta(minutes=1),
+    }
+    token = pyjwt.encode(expired_payload, settings.secret_key, algorithm=settings.jwt_algorithm)
+    client.cookies.set(COOKIE_NAME, token)
+    response = client.get("/api/v1/auth/me")
+    assert response.status_code == 401
+
+
+def test_forged_token_returns_401(client: TestClient, user) -> None:
+    payload = {
+        "sub": str(user.id),
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=30),
+    }
+    forged_token = pyjwt.encode(payload, "wrong-secret", algorithm=settings.jwt_algorithm)
+    client.cookies.set(COOKIE_NAME, forged_token)
+    response = client.get("/api/v1/auth/me")
+    assert response.status_code == 401
+
+
+def test_token_for_deleted_user_returns_401(
+    client: TestClient, db_session, user
+) -> None:
+    token = create_access_token(user.id)
+    db_session.delete(user)
+    db_session.commit()
+    client.cookies.set(COOKIE_NAME, token)
+    response = client.get("/api/v1/auth/me")
+    assert response.status_code == 401
+
+
+def test_google_callback_oauth_error_redirects_to_frontend(
+    client: TestClient, monkeypatch
+) -> None:
+    from authlib.integrations.base_client import OAuthError
+
+    from app.auth.oauth import oauth
+    from app.core.config import settings
+
+    async def fake_authorize_access_token(request):
+        raise OAuthError(description="access_denied")
+
+    monkeypatch.setattr(oauth.google, "authorize_access_token", fake_authorize_access_token)
+    response = client.get(
+        "/api/v1/auth/google/callback?state=x&code=y", follow_redirects=False
+    )
+    assert response.status_code in (302, 307)
+    assert response.headers["location"] == settings.frontend_url
 
 
 def test_logout_clears_session(auth_client: TestClient) -> None:
