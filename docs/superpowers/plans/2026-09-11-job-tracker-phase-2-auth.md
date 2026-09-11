@@ -345,10 +345,12 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: `app.db.base.Base`, `app.db.base.TimestampMixin`.
 - Produces:
-  - `app.users.models.User` — ORM model, `__tablename__ = "users"`. Columns: `id` (UUID PK, default `uuid4`), `google_sub` (str, unique, not null), `email` (str, unique, not null), `name` (str, not null), `picture_url` (str, nullable). `applications: Mapped[list["Application"]]` relationship (back-populated from `Application.owner`, added in Task 5 — the forward reference is written now, resolved when Task 5 adds the other side).
+  - `app.users.models.User` — ORM model, `__tablename__ = "users"`. Columns only in this task: `id` (UUID PK, default `uuid4`), `google_sub` (str, unique, not null), `email` (str, unique, not null), `name` (str, not null), `picture_url` (str, nullable). **No `applications` relationship yet** — see the note below.
   - `app.users.schemas.UserRead` — `id`, `email`, `name`, `picture_url`; `ConfigDict(from_attributes=True)`.
   - Migration `0002` (`down_revision = "0001"`) creating the `users` table with unique constraints on `google_sub` and `email`.
 - Nothing yet references `User` from `applications` — that's Task 5. This task is purely additive and does not touch `applications`.
+
+**Why no relationship yet:** a `User.applications = relationship(back_populates="owner", ...)` here would reference `Application.owner`, which doesn't exist until Task 5. That's not just a forward-reference — the moment anything commits a mapped object (which this task's own Step 9 does, by re-running the pre-existing `test_service.py`/`test_applications_api.py`), SQLAlchemy runs `configure_mappers()` across the *entire* registry, which validates every `back_populates` target immediately — it would raise `InvalidRequestError` on `Application` having no `owner` property, breaking every Phase 1 test in this task. Task 5 adds both sides of the relationship together, atomically, once `Application.owner` exists.
 
 - [ ] **Step 1: Create `backend/app/users/__init__.py`** (empty file)
 
@@ -356,16 +358,12 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 
 ```python
 import uuid
-from typing import TYPE_CHECKING
 
 from sqlalchemy import String
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
-
-if TYPE_CHECKING:
-    from app.applications.models import Application
 
 
 class User(TimestampMixin, Base):
@@ -380,13 +378,9 @@ class User(TimestampMixin, Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     picture_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-
-    applications: Mapped[list["Application"]] = relationship(
-        back_populates="owner", cascade="all, delete-orphan"
-    )
 ```
 
-Note: this references `Application.owner`, which does not exist until Task 5. SQLAlchemy resolves relationship string arguments lazily (at first mapper configuration, not at class-definition time), so this is valid Python and valid SQLAlchemy right now — it will only raise if something tries to actually use the ORM relationship machinery (e.g. run a query touching `User.applications`) before Task 5 adds the other side. Nothing in this task or Task 4 does that.
+Task 5 adds the `applications` relationship here (and `Application.owner` on the other side) in the same commit that adds `Application.user_id` — see Task 5 Step 2a.
 
 - [ ] **Step 3: Write `backend/app/users/schemas.py`**
 
@@ -730,16 +724,95 @@ def create_app() -> FastAPI:
 app = create_app()
 ```
 
-- [ ] **Step 7: Add `user` and `auth_client` fixtures to `backend/tests/conftest.py`**
+- [ ] **Step 7: Update `backend/tests/conftest.py` — add `user` and `auth_client` fixtures**
 
-Append to the end of the file (after the existing `client` fixture):
+Replace the whole file with (this is Task 2's file plus: three new imports, and the new helpers/fixtures appended at the end):
 
 ```python
+from collections.abc import Iterator
+from pathlib import Path
+
+import psycopg
+import pytest
+from alembic import command
+from alembic.config import Config
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.orm import Session
+
+from app.auth.dependencies import COOKIE_NAME
+from app.auth.jwt import create_access_token
+from app.core.config import settings
+from app.db.base import Base
+from app.main import app
+from app.users.models import User
+
+# Models must be imported so their tables are registered on Base.metadata.
+from app.applications import models  # noqa: F401
+
+BACKEND_ROOT = Path(__file__).resolve().parent.parent
+ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
+
+_dev_url = make_url(settings.database_url)
+TEST_DB_NAME = f"{_dev_url.database}_test"
+TEST_DATABASE_URL = str(_dev_url.set(database=TEST_DB_NAME))
+ADMIN_URL = str(_dev_url.set(database="postgres", drivername="postgresql"))
 
 
-from app.auth.dependencies import COOKIE_NAME  # noqa: E402
-from app.auth.jwt import create_access_token  # noqa: E402
-from app.users.models import User  # noqa: E402
+def _ensure_test_database() -> None:
+    with psycopg.connect(ADMIN_URL, autocommit=True) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM pg_database WHERE datname = %s", (TEST_DB_NAME,)
+        ).fetchone()
+        if row is None:
+            conn.execute(f'CREATE DATABASE "{TEST_DB_NAME}"')
+
+
+def _alembic_config(url: str) -> Config:
+    cfg = Config(str(ALEMBIC_INI))
+    cfg.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", url)
+    return cfg
+
+
+@pytest.fixture(scope="session")
+def engine():
+    _ensure_test_database()
+    eng = create_engine(TEST_DATABASE_URL, future=True)
+    Base.metadata.drop_all(eng)
+    with eng.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    command.upgrade(_alembic_config(TEST_DATABASE_URL), "head")
+    yield eng
+    eng.dispose()
+
+
+@pytest.fixture
+def db_session(engine):
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, join_transaction_mode="create_savepoint")
+    try:
+        yield session
+    finally:
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+@pytest.fixture
+def client(db_session) -> Iterator[TestClient]:
+    from app.db.session import get_db
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
 
 
 def _make_user(db_session: Session, *, google_sub: str, email: str, name: str) -> User:
@@ -777,7 +850,7 @@ def auth_client(db_session: Session, user: User) -> Iterator[TestClient]:
     yield from _authenticated_client(db_session, user)
 ```
 
-(The `# noqa: E402` markers are because these imports come after other top-level code in the file — acceptable here since `app.auth.*` imports `app.main`, which must already be fully loaded, i.e. these imports must come after the existing `from app.main import app` at the top.)
+(The three new top-level imports — `app.auth.dependencies`, `app.auth.jwt`, `app.users.models` — are safe at the top: by Step 6 of this task, `app.main` already imports `app.auth.router`, which already imports both `app.auth.dependencies` and (transitively) `app.users.models`, so nothing here is circular; it's just normal, already-cached re-importing.)
 
 - [ ] **Step 8: Write the failing tests — `backend/tests/test_auth.py`**
 
@@ -857,6 +930,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 **Files:**
 - Create: `backend/alembic/versions/0003_add_user_id_to_applications.py`
 - Modify: `backend/app/applications/models.py`
+- Modify: `backend/app/users/models.py` (add the `applications` relationship — the other half of Task 3's deferred back-reference)
 - Modify: `backend/app/applications/service.py`
 - Modify: `backend/app/applications/router.py`
 - Modify: `backend/tests/conftest.py` (add `other_user`, `other_auth_client`)
@@ -977,6 +1051,44 @@ class Application(TimestampMixin, Base):
 
     owner: Mapped["User"] = relationship(back_populates="applications")
 ```
+
+- [ ] **Step 2a: Update `backend/app/users/models.py` — add the other half of the relationship**
+
+Replace the file with:
+
+```python
+import uuid
+from typing import TYPE_CHECKING
+
+from sqlalchemy import String
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from app.applications.models import Application
+
+
+class User(TimestampMixin, Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    google_sub: Mapped[str] = mapped_column(
+        String(255), nullable=False, unique=True, index=True
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    picture_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+    applications: Mapped[list["Application"]] = relationship(
+        back_populates="owner", cascade="all, delete-orphan"
+    )
+```
+
+Both sides of the relationship (`Application.owner` from Step 2, `User.applications` here) land in this same task, so mapper configuration never sees one side without the other — this is exactly the ordering problem Task 3 flagged and deferred.
 
 - [ ] **Step 3: Apply and verify the migration against the dev database**
 
@@ -1436,7 +1548,7 @@ Expected: prints `401`.
 - [ ] **Step 17: Commit**
 
 ```bash
-git add backend/alembic/versions/0003_add_user_id_to_applications.py backend/app/applications backend/tests
+git add backend/alembic/versions/0003_add_user_id_to_applications.py backend/app/applications backend/app/users/models.py backend/tests
 git commit -m "feat(backend): scope application CRUD to the authenticated user
 
 Every applications endpoint now requires authentication and only
