@@ -1527,12 +1527,12 @@ def delete_application(
 - [ ] **Step 14: Run to verify GREEN**
 
 Run: `cd backend && uv run pytest tests/test_applications_api.py -v`
-Expected: all 18 tests PASS.
+Expected: all 17 tests PASS.
 
 - [ ] **Step 15: Run the entire backend suite**
 
 Run: `cd backend && uv run pytest -v`
-Expected: every test passes — `test_health` (1) + `test_schemas` (9) + `test_service` (9) + `test_auth` (5, including the one that was failing in Task 4) + `test_applications_api` (18) = **42 passed**, output pristine.
+Expected: every test passes — `test_health` (1) + `test_schemas` (9) + `test_service` (9) + `test_auth` (5, including the one that was failing in Task 4) + `test_applications_api` (17) = **41 passed**, output pristine.
 
 - [ ] **Step 16: Manual smoke test against the real dev DB**
 
@@ -2014,7 +2014,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - [ ] **Step 1: Run the full backend suite once more**
 
 Run: `cd backend && uv run pytest -v`
-Expected: `42 passed`, output pristine (2 pre-existing third-party deprecation warnings are fine, same as Phase 1).
+Expected: `41 passed`, output pristine (2 pre-existing third-party deprecation warnings are fine, same as Phase 1).
 
 - [ ] **Step 2: Run the frontend build once more**
 
@@ -2102,7 +2102,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - [ ] **Step 8: Final verification summary**
 
 Confirm and report:
-- `cd backend && uv run pytest` → 42 passed (state the count)
+- `cd backend && uv run pytest` → 41 passed (state the count)
 - `cd frontend && npm run build` → succeeds
 - Step 3's two `401` checks → both passed
 - Remind the user: real Google credentials (Task 8 Step 4's instructions) are still needed before anyone can click "Sign in with Google" and actually complete a login — that final click-through is a manual, human-in-a-browser step this plan cannot automate.
