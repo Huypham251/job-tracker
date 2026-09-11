@@ -12,8 +12,10 @@ config = context.config
 from app.core.config import settings
 from app.db.base import Base
 from app.applications import models  # noqa: F401  (register models on Base.metadata)
+from app.users import models as _user_models  # noqa: F401
 
-config.set_main_option("sqlalchemy.url", settings.database_url)
+if not config.get_main_option("sqlalchemy.url"):
+    config.set_main_option("sqlalchemy.url", settings.database_url)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
