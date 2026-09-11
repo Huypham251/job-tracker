@@ -905,7 +905,9 @@ def test_logout_clears_session(auth_client: TestClient) -> None:
     assert auth_client.get("/api/v1/auth/me").status_code == 200
     logout_response = auth_client.post("/api/v1/auth/logout")
     assert logout_response.status_code == 204
-    assert auth_client.get("/api/v1/auth/me").status_code == 401
+    set_cookie_header = logout_response.headers.get("set-cookie", "")
+    assert COOKIE_NAME in set_cookie_header
+    assert "max-age=0" in set_cookie_header.lower()
 
 
 def test_applications_endpoint_requires_authentication(client: TestClient) -> None:
@@ -914,6 +916,8 @@ def test_applications_endpoint_requires_authentication(client: TestClient) -> No
 ```
 
 Note: `test_applications_endpoint_requires_authentication` will currently FAIL until Task 5 adds `Depends(get_current_user)` to the applications router — expected. Run it now to confirm that specific, expected failure (not a different error).
+
+Note on `test_logout_clears_session`: it asserts on the logout response's `Set-Cookie` header directly rather than making a second request on the same client to check it's now unauthenticated. That second-request approach is tempting but flaky under httpx's `TestClient` — a cookie set via `client.cookies.set(...)` (domain `""`) and a cookie cleared via the server's `Set-Cookie` response can resolve to different effective domains in httpx's cookie jar (an internal quirk of matching against the fake `testserver` host), so the manually-injected cookie may not actually get cleared in the jar even though a real browser would clear it correctly. Asserting on the header is both more robust (no httpx-version-dependent behavior) and more direct (it tests the actual contract the endpoint promises).
 
 - [ ] **Step 9: Run the new tests**
 
