@@ -120,3 +120,15 @@ def user(db_session: Session) -> User:
 @pytest.fixture
 def auth_client(db_session: Session, user: User) -> Iterator[TestClient]:
     yield from _authenticated_client(db_session, user)
+
+
+@pytest.fixture
+def other_user(db_session: Session) -> User:
+    return _make_user(
+        db_session, google_sub="google-sub-2", email="bob@example.com", name="Bob"
+    )
+
+
+@pytest.fixture
+def other_auth_client(db_session: Session, other_user: User) -> Iterator[TestClient]:
+    yield from _authenticated_client(db_session, other_user)
