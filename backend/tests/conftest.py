@@ -16,6 +16,7 @@ from app.main import app
 
 # Models must be imported so their tables are registered on Base.metadata.
 from app.applications import models  # noqa: F401
+from app.users import models as _user_models  # noqa: F401
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
