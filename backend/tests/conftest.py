@@ -10,13 +10,15 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
+from app.auth.dependencies import COOKIE_NAME
+from app.auth.jwt import create_access_token
 from app.core.config import settings
 from app.db.base import Base
 from app.main import app
+from app.users.models import User
 
 # Models must be imported so their tables are registered on Base.metadata.
 from app.applications import models  # noqa: F401
-from app.users import models as _user_models  # noqa: F401
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
@@ -83,3 +85,38 @@ def client(db_session) -> Iterator[TestClient]:
         yield TestClient(app)
     finally:
         app.dependency_overrides.clear()
+
+
+def _make_user(db_session: Session, *, google_sub: str, email: str, name: str) -> User:
+    user = User(google_sub=google_sub, email=email, name=name)
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+    return user
+
+
+def _authenticated_client(db_session: Session, user: User) -> Iterator[TestClient]:
+    from app.db.session import get_db
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    test_client = TestClient(app)
+    test_client.cookies.set(COOKIE_NAME, create_access_token(user.id))
+    try:
+        yield test_client
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def user(db_session: Session) -> User:
+    return _make_user(
+        db_session, google_sub="google-sub-1", email="alice@example.com", name="Alice"
+    )
+
+
+@pytest.fixture
+def auth_client(db_session: Session, user: User) -> Iterator[TestClient]:
+    yield from _authenticated_client(db_session, user)
