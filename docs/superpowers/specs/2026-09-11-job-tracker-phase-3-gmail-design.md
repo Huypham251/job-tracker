@@ -56,7 +56,7 @@ more than one connected Gmail account per user, CI, deployment.
 ```
 backend/
 ├── alembic/versions/
-│   └── 0003_add_gmail_connections.py       # NEW
+│   └── 0004_add_gmail_connections.py       # NEW
 ├── app/
 │   ├── core/
 │   │   └── config.py                       # MODIFIED — gmail_token_encryption_key
@@ -101,7 +101,7 @@ No message content is stored anywhere. `GmailConnection.owner: Mapped["User"]` /
 relationship, `cascade="all, delete-orphan"` on the `User` side (deleting a
 `User` deletes their Gmail connection too, same pattern as `applications`).
 
-### Migration `0003_add_gmail_connections`
+### Migration `0004_add_gmail_connections`
 
 1. Create `gmail_connections` table with the FK (`ondelete="CASCADE"`) and a
    unique index on `user_id`.
@@ -133,8 +133,10 @@ Browser                    FastAPI                          Google
   ├──────────────────────────▶
   │                           current_user = Depends(get_current_user)  [our session cookie rides along —
   │                                                                       SameSite=Lax allows top-level GET nav]
-  │                           verify state; exchange code → {access_token, refresh_token, expires_in}
-  │                           encrypt both; upsert GmailConnection(user_id=current_user.id, ...)
+  │                           verify state; exchange code → {access_token, refresh_token, expires_in, scope}
+  │                           GET .../gmail/v1/users/me/profile (learns google_email — gmail.readonly
+  │                                                               already covers this endpoint, no extra scope)
+  │                           encrypt both tokens; upsert GmailConnection(user_id=current_user.id, ...)
   │  302 → FRONTEND_URL
   ◀──────────────────────────┤
 ```
@@ -188,7 +190,7 @@ endpoint requires `get_current_user`** (no anonymous Gmail routes):
 | `GET` | `/api/v1/gmail/callback` | `302` → `FRONTEND_URL` | stores the encrypted connection |
 | `GET` | `/api/v1/gmail/status` | `200` `GmailStatus` | `{connected: bool, email: str \| null, connected_at: datetime \| null}` |
 | `POST` | `/api/v1/gmail/disconnect` | `204` | `404` if not connected |
-| `GET` | `/api/v1/gmail/messages?limit=20` | `200` `list[GmailMessageSummary]` | `409` if not connected; `limit` defaults to 20, capped at 50 |
+| `GET` | `/api/v1/gmail/messages?limit=20` | `200` `list[GmailMessageSummary]` | `404` if not connected (same `GmailNotConnected` → 404 convention as `ApplicationNotFound`); `limit` defaults to 20, capped at 50 |
 
 `GmailMessageSummary`: `id`, `subject`, `from_`, `date`, `snippet`. No token
 material is ever present in any response body.
