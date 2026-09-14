@@ -37,7 +37,13 @@ def connected_gmail(db_session, user) -> GmailConnection:
 
 @pytest.mark.parametrize(
     "method,path",
-    [("get", "/connect"), ("get", "/status"), ("get", "/messages"), ("post", "/disconnect")],
+    [
+        ("get", "/connect"),
+        ("get", "/status"),
+        ("get", "/messages"),
+        ("post", "/disconnect"),
+        ("get", "/callback?state=x&code=y"),
+    ],
 )
 def test_gmail_endpoints_require_authentication(client: TestClient, method, path) -> None:
     response = getattr(client, method)(f"{BASE}{path}")
@@ -110,6 +116,42 @@ def test_messages_endpoint_returns_summaries(
 def test_messages_endpoint_404_when_not_connected(auth_client: TestClient) -> None:
     response = auth_client.get(f"{BASE}/messages")
     assert response.status_code == 404
+
+
+def test_messages_endpoint_502_when_google_api_fails(
+    auth_client: TestClient, connected_gmail, monkeypatch
+) -> None:
+    def failing_list_message_ids(token, limit):
+        raise google_api.GoogleApiError("boom")
+
+    monkeypatch.setattr(google_api, "list_message_ids", failing_list_message_ids)
+
+    response = auth_client.get(f"{BASE}/messages")
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": "Gmail request failed. Try reconnecting your Gmail account."
+    }
+
+
+def test_messages_endpoint_persists_no_new_rows(
+    db_session, auth_client: TestClient, connected_gmail, monkeypatch
+) -> None:
+    monkeypatch.setattr(google_api, "list_message_ids", lambda token, limit: ["m1"])
+    monkeypatch.setattr(
+        google_api,
+        "get_message_summary",
+        lambda token, message_id: {
+            "id": message_id, "subject": "Hi", "from_": "a@b.com", "date": "d", "snippet": "s"
+        },
+    )
+    count_before = db_session.query(GmailConnection).count()
+
+    response = auth_client.get(f"{BASE}/messages?limit=1")
+
+    assert response.status_code == 200
+    count_after = db_session.query(GmailConnection).count()
+    assert count_after == count_before
 
 
 def test_disconnect_endpoint_deletes_connection(

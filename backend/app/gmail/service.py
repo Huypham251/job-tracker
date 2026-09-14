@@ -39,6 +39,16 @@ def connect(db: Session, user_id: UUID, token: dict) -> GmailConnection:
     if connection is None:
         connection = GmailConnection(user_id=user_id)
         db.add(connection)
+    else:
+        old_refresh_token = decrypt_token(connection.refresh_token_encrypted)
+        try:
+            google_api.revoke_token(old_refresh_token)
+        except google_api.GoogleApiError:
+            # A failed revoke leaves a stale grant at Google — logged, not
+            # fatal. We still proceed with the reconnect: overwriting our
+            # row with the new tokens matters more than a lagging revoke
+            # upstream.
+            logger.warning("Failed to revoke Gmail token for user %s on reconnect", user_id)
 
     connection.google_email = profile["emailAddress"]
     connection.access_token_encrypted = encrypt_token(access_token)

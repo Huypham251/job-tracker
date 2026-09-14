@@ -57,6 +57,40 @@ def test_connect_updates_existing_connection_on_reconnect(db_session, user, monk
     assert count == 1
 
 
+def test_connect_revokes_old_refresh_token_on_reconnect(db_session, user, monkeypatch) -> None:
+    monkeypatch.setattr(google_api, "get_profile", lambda token: {"emailAddress": "alice@gmail.com"})
+    service.connect(db_session, user.id, FAKE_TOKEN)
+
+    revoked = []
+    monkeypatch.setattr(google_api, "revoke_token", lambda token: revoked.append(token))
+    monkeypatch.setattr(google_api, "get_profile", lambda token: {"emailAddress": "alice.new@gmail.com"})
+    new_token = {**FAKE_TOKEN, "refresh_token": "new-refresh", "access_token": "new-access"}
+
+    service.connect(db_session, user.id, new_token)
+
+    assert revoked == [FAKE_TOKEN["refresh_token"]]
+
+
+def test_connect_reconnect_succeeds_even_if_revoke_raises(db_session, user, monkeypatch) -> None:
+    monkeypatch.setattr(google_api, "get_profile", lambda token: {"emailAddress": "alice@gmail.com"})
+    service.connect(db_session, user.id, FAKE_TOKEN)
+
+    def failing_revoke(token):
+        raise google_api.GoogleApiError("boom")
+
+    monkeypatch.setattr(google_api, "revoke_token", failing_revoke)
+    monkeypatch.setattr(google_api, "get_profile", lambda token: {"emailAddress": "alice.new@gmail.com"})
+    new_token = {**FAKE_TOKEN, "refresh_token": "new-refresh", "access_token": "new-access"}
+
+    connection = service.connect(db_session, user.id, new_token)
+
+    assert connection.google_email == "alice.new@gmail.com"
+    assert decrypt_token(connection.access_token_encrypted) == "new-access"
+    assert decrypt_token(connection.refresh_token_encrypted) == "new-refresh"
+    count = db_session.query(GmailConnection).filter_by(user_id=user.id).count()
+    assert count == 1
+
+
 def test_get_valid_access_token_returns_cached_token_when_not_expiring_soon(
     db_session, user, monkeypatch
 ) -> None:
