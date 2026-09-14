@@ -7,7 +7,9 @@ requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.19.2",
     "authlib>=1.8.0",
+    "cryptography>=43.0.0",
     "fastapi>=0.141.1",
+    "httpx>=0.28.1",
     "itsdangerous>=2.2.0",
     "psycopg[binary]>=3.3.5",
     "pydantic>=2.13.5",
@@ -19,6 +21,5 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28.1",
     "pytest>=9.1.1",
 ]

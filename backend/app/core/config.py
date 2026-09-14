@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 43200
     frontend_url: str = "http://localhost:5173"
     cookie_secure: bool = False
+    gmail_token_encryption_key: str
 
     @property
     def cors_origins_list(self) -> list[str]:
