@@ -106,6 +106,36 @@ sign-in. To actually log in through the browser:
    Google", approve the consent screen, and you should land back on the
    dashboard signed in.
 
+## Gmail integration setup (Phase 3, optional)
+
+Logging in with Google (above) does **not** grant Gmail access — that's a
+second, explicit consent a signed-in user triggers from the dashboard's
+"Connect Gmail" button. To enable it locally:
+
+1. In the same Google Cloud project from "Google OAuth setup", enable the
+   **Gmail API**: APIs & Services → Library → search "Gmail API" → Enable.
+2. APIs & Services → OAuth consent screen → add scope
+   `https://www.googleapis.com/auth/gmail.readonly`. This is a sensitive
+   scope — while the app is in "Testing" mode, only your own account (added
+   as a test user in the login setup above) can complete this consent.
+3. APIs & Services → Credentials → open your existing OAuth client → add
+   `http://localhost:8000/api/v1/gmail/callback` to "Authorized redirect
+   URIs". No new client ID/secret is needed.
+4. Generate a token-encryption key and add it to `backend/.env`:
+   ```
+   python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
+   ```
+   GMAIL_TOKEN_ENCRYPTION_KEY=<paste the generated key>
+   ```
+5. Restart the backend. On the dashboard, click "Connect Gmail" under the
+   Gmail panel, approve the consent screen, and "Fetch recent messages"
+   should return your actual recent inbox headers (subject/from/date/
+   snippet only — Job Tracker never reads or stores message bodies in this
+   phase).
+
+Full design: `docs/superpowers/specs/2026-09-11-job-tracker-phase-3-gmail-design.md`
+
 ## Database migrations
 
 ```bash
