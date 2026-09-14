@@ -7,6 +7,8 @@ from app.applications.exceptions import ApplicationNotFound
 from app.applications.router import router as applications_router
 from app.auth.router import router as auth_router
 from app.core.config import settings
+from app.gmail.exceptions import GmailNotConnected
+from app.gmail.router import router as gmail_router
 
 
 def create_app() -> FastAPI:
@@ -37,12 +39,19 @@ def create_app() -> FastAPI:
     ) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
+    @app.exception_handler(GmailNotConnected)
+    async def handle_gmail_not_connected(
+        request: Request, exc: GmailNotConnected
+    ) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(applications_router, prefix="/api/v1")
+    app.include_router(gmail_router, prefix="/api/v1")
 
     return app
 
