@@ -9,6 +9,7 @@ from app.db.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from app.applications.models import Application
+    from app.gmail.models import GmailConnection
 
 
 class User(TimestampMixin, Base):
@@ -24,4 +25,7 @@ class User(TimestampMixin, Base):
 
     applications: Mapped[list["Application"]] = relationship(
         back_populates="owner", cascade="all, delete-orphan"
+    )
+    gmail_connection: Mapped["GmailConnection | None"] = relationship(
+        back_populates="owner", cascade="all, delete-orphan", uselist=False
     )
