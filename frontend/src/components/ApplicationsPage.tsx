@@ -5,6 +5,7 @@ import type { Application } from '../types/application'
 import type { User } from '../types/user'
 import { ApplicationForm } from './ApplicationForm'
 import { ApplicationList } from './ApplicationList'
+import { GmailPanel } from './GmailPanel'
 import { UserMenu } from './UserMenu'
 
 interface Props {
@@ -27,6 +28,8 @@ export function ApplicationsPage({ user, onLogout }: Props) {
         </div>
         <UserMenu user={user} onLogout={onLogout} />
       </header>
+
+      <GmailPanel />
 
       {editing ? (
         <ApplicationForm
