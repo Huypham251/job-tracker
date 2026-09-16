@@ -151,7 +151,11 @@ Requires Gmail to already be connected (Phase 3, above).
 3. On the dashboard, click **Process Inbox**. This fetches your recent Gmail
    messages (up to `PIPELINE_BATCH_LIMIT`, default 20), classifies each one, and
    either auto-creates/updates an application, ignores it, or adds it to the
-   **Needs review** queue below the Gmail panel.
+   **Needs review** queue below the Gmail panel. Each email's cleaned body text
+   (headers, HTML, and quoted replies stripped) is sent to Anthropic for
+   classification — nothing is sent anywhere else, and nothing is sent for
+   messages already processed. At current Opus pricing this is roughly
+   $0.005–0.01 per email, so a 20-message batch costs about $0.10–0.20.
 4. For anything in the review queue, **Approve** (optionally editing a field
    first) or **Reject**. Automation never touches an application you created by
    hand — those always go through this queue, regardless of how confident the
