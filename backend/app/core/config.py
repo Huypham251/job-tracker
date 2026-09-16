@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:5173"
     cookie_secure: bool = False
     gmail_token_encryption_key: str
+    anthropic_api_key: str
+    llm_model: str = "claude-opus-5"
+    llm_confidence_threshold: float = 0.85
+    pipeline_batch_limit: int = 20
 
     @property
     def cors_origins_list(self) -> list[str]:
