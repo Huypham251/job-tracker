@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -48,5 +49,6 @@ class ApplicationRead(BaseModel):
     position: str
     status: ApplicationStatus
     applied_at: date | None
+    source: Literal["manual", "gmail"]
     created_at: datetime
     updated_at: datetime

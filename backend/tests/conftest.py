@@ -20,6 +20,7 @@ from app.users.models import User
 # Models must be imported so their tables are registered on Base.metadata.
 from app.applications import models  # noqa: F401
 from app.gmail import models as gmail_models  # noqa: F401
+from app.pipeline import models as pipeline_models  # noqa: F401
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"

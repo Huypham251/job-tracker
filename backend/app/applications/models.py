@@ -20,6 +20,7 @@ class ApplicationStatus(enum.StrEnum):
     rejected = "rejected"
     offer = "offer"
     withdrawn = "withdrawn"
+    other = "other"
 
 
 class Application(TimestampMixin, Base):
@@ -46,5 +47,6 @@ class Application(TimestampMixin, Base):
         default=ApplicationStatus.applied,
     )
     applied_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source: Mapped[str] = mapped_column(String(10), nullable=False, default="manual")
 
     owner: Mapped["User"] = relationship(back_populates="applications")
