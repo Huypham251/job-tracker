@@ -1,8 +1,8 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import Date, DateTime, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -31,5 +31,6 @@ class GmailConnection(TimestampMixin, Base):
         DateTime(timezone=True), nullable=False
     )
     scope: Mapped[str] = mapped_column(String(255), nullable=False)
+    last_synced_message_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     owner: Mapped["User"] = relationship(back_populates="gmail_connection")

@@ -41,4 +41,7 @@ class ProcessedMessage(TimestampMixin, Base):
         nullable=True,
     )
     proposed_action: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    sync_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("sync_jobs.id", ondelete="SET NULL"), nullable=True
+    )
     review_status: Mapped[str] = mapped_column(String(20), nullable=False)

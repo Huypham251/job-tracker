@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     # decision made from the calibration data, not an oversight.
     classification_confidence_threshold: float = 0.85
     pipeline_batch_limit: int = 20
+    gmail_sync_backfill_days: int = 180
 
     @property
     def cors_origins_list(self) -> list[str]:
