@@ -1,17 +1,36 @@
 import { useEffect, useState } from 'react'
 
 import { approveReviewItem, getReviewQueue, rejectReviewItem } from '../api/pipeline'
-import type { ReviewItem } from '../types/pipeline'
+import { APPLICATION_STATUSES, type Application } from '../types/application'
+import type { ReviewDecision, ReviewItem } from '../types/pipeline'
+import { STATUS_LABELS } from '../constants'
 
 interface Props {
+  applications: Application[]
   onApplicationsChanged: () => void
 }
 
-export function ReviewQueue({ onApplicationsChanged }: Props) {
+interface EditState {
+  company: string
+  position: string
+  status: string
+  status_date: string
+}
+
+function emptyEdit(item: ReviewItem): EditState {
+  return {
+    company: item.extracted_company ?? '',
+    position: item.extracted_position ?? '',
+    status: item.extracted_status ?? 'applied',
+    status_date: item.extracted_status_date ?? '',
+  }
+}
+
+export function ReviewQueue({ applications, onApplicationsChanged }: Props) {
   const [items, setItems] = useState<ReviewItem[]>([])
   const [error, setError] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [editedCompany, setEditedCompany] = useState('')
+  const [edit, setEdit] = useState<EditState | null>(null)
 
   const refresh = () => {
     getReviewQueue()
@@ -21,12 +40,26 @@ export function ReviewQueue({ onApplicationsChanged }: Props) {
 
   useEffect(refresh, [])
 
+  const startEditing = (item: ReviewItem) => {
+    setEditingId(item.id)
+    setEdit(emptyEdit(item))
+  }
+
   const handleApprove = async (item: ReviewItem) => {
     setError(null)
     try {
-      const edits = editingId === item.id && editedCompany ? { company: editedCompany } : {}
+      const edits: ReviewDecision =
+        editingId === item.id && edit
+          ? {
+              company: edit.company || undefined,
+              position: edit.position || undefined,
+              status: edit.status || undefined,
+              status_date: edit.status_date || undefined,
+            }
+          : {}
       await approveReviewItem(item.id, edits)
       setEditingId(null)
+      setEdit(null)
       refresh()
       onApplicationsChanged()
     } catch (err) {
@@ -57,49 +90,87 @@ export function ReviewQueue({ onApplicationsChanged }: Props) {
       )}
 
       <ul className="space-y-3">
-        {items.map((item) => (
-          <li key={item.id} className="rounded border border-gray-200 bg-white p-3 text-sm">
-            <p className="font-medium text-gray-900">{item.subject}</p>
-            <p className="text-gray-500">{item.sender}</p>
-            <p className="mt-1 text-gray-600">{item.snippet}</p>
-            <p className="mt-1 text-gray-700">
-              {item.proposed_action === 'update' ? 'Update' : 'Create'}: {item.extracted_company ?? '?'} —{' '}
-              {item.extracted_position ?? '?'} ({item.extracted_status ?? 'unknown status'}) — confidence{' '}
-              {Math.round(item.confidence * 100)}%
-            </p>
-            {editingId === item.id && (
-              <input
-                className="mt-2 w-full rounded border border-gray-300 px-2 py-1 text-sm"
-                placeholder="Correct company name"
-                value={editedCompany}
-                onChange={(e) => setEditedCompany(e.target.value)}
-              />
-            )}
-            <div className="mt-2 flex gap-2">
-              <button
-                onClick={() => handleApprove(item)}
-                className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
-              >
-                Approve
-              </button>
-              <button
-                onClick={() => {
-                  setEditingId(item.id)
-                  setEditedCompany(item.extracted_company ?? '')
-                }}
-                className="rounded border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-              >
-                Edit
-              </button>
-              <button
-                onClick={() => handleReject(item)}
-                className="rounded border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-              >
-                Reject
-              </button>
-            </div>
-          </li>
-        ))}
+        {items.map((item) => {
+          const matched = item.matched_application_id
+            ? applications.find((a) => a.id === item.matched_application_id)
+            : undefined
+
+          return (
+            <li key={item.id} className="rounded border border-gray-200 bg-white p-3 text-sm">
+              <p className="font-medium text-gray-900">{item.subject}</p>
+              <p className="text-gray-500">{item.sender}</p>
+              <p className="mt-1 text-gray-600">{item.snippet}</p>
+
+              {matched && (
+                <p className="mt-2 rounded bg-gray-50 p-2 text-xs text-gray-600">
+                  Current: {matched.company} — {matched.position} ({STATUS_LABELS[matched.status]}
+                  {matched.applied_at ? `, ${matched.applied_at}` : ''})
+                </p>
+              )}
+
+              <p className="mt-1 text-gray-700">
+                {item.proposed_action === 'update' ? 'Update to' : 'Create'}: {item.extracted_company ?? '?'} —{' '}
+                {item.extracted_position ?? '?'} ({item.extracted_status ?? 'unknown status'}) — confidence{' '}
+                {Math.round(item.confidence * 100)}%
+              </p>
+
+              {editingId === item.id && edit && (
+                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <input
+                    className="rounded border border-gray-300 px-2 py-1 text-sm"
+                    placeholder="Company"
+                    value={edit.company}
+                    onChange={(e) => setEdit({ ...edit, company: e.target.value })}
+                  />
+                  <input
+                    className="rounded border border-gray-300 px-2 py-1 text-sm"
+                    placeholder="Position"
+                    value={edit.position}
+                    onChange={(e) => setEdit({ ...edit, position: e.target.value })}
+                  />
+                  <select
+                    className="rounded border border-gray-300 px-2 py-1 text-sm"
+                    value={edit.status}
+                    onChange={(e) => setEdit({ ...edit, status: e.target.value })}
+                  >
+                    {APPLICATION_STATUSES.map((value) => (
+                      <option key={value} value={value}>
+                        {STATUS_LABELS[value]}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="date"
+                    className="rounded border border-gray-300 px-2 py-1 text-sm"
+                    value={edit.status_date}
+                    onChange={(e) => setEdit({ ...edit, status_date: e.target.value })}
+                  />
+                </div>
+              )}
+
+              <div className="mt-2 flex gap-2">
+                <button
+                  onClick={() => handleApprove(item)}
+                  className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
+                >
+                  Approve
+                </button>
+                <button
+                  onClick={() => startEditing(item)}
+                  className="rounded border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => handleReject(item)}
+                  className="rounded border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  Reject
+                </button>
+              </div>
+            </li>
+          )
+        })}
       </ul>
     </section>
   )

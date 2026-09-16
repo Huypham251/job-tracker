@@ -71,7 +71,7 @@ export function ApplicationsPage({ user, onLogout }: Props) {
         )}
       </section>
 
-      <ReviewQueue onApplicationsChanged={() => void refetch()} />
+      <ReviewQueue applications={applications} onApplicationsChanged={() => void refetch()} />
 
       {editing ? (
         <ApplicationForm
