@@ -12,8 +12,9 @@ from app.gmail.exceptions import GmailNotConnected
 from app.llm.client import Extractor, LLMExtractionError
 from app.llm.schemas import EmailExtraction
 from app.pipeline import matching
+from app.pipeline.exceptions import ReviewItemNotFound
 from app.pipeline.models import ProcessedMessage
-from app.pipeline.schemas import ProcessResult
+from app.pipeline.schemas import ProcessResult, ReviewDecision
 
 logger = logging.getLogger(__name__)
 
@@ -141,3 +142,75 @@ def _apply_decision(
     if extraction.status_date is not None:
         application.applied_at = extraction.status_date
     return "auto_applied", application.id, "update"
+
+
+def list_review_queue(db: Session, user_id: UUID) -> list[ProcessedMessage]:
+    return list(
+        db.scalars(
+            select(ProcessedMessage)
+            .where(
+                ProcessedMessage.user_id == user_id,
+                ProcessedMessage.review_status == "pending_review",
+            )
+            .order_by(ProcessedMessage.created_at.desc())
+        )
+    )
+
+
+def _get_pending_item(db: Session, user_id: UUID, item_id: UUID) -> ProcessedMessage:
+    item = db.scalars(
+        select(ProcessedMessage).where(
+            ProcessedMessage.id == item_id,
+            ProcessedMessage.user_id == user_id,
+            ProcessedMessage.review_status == "pending_review",
+        )
+    ).one_or_none()
+    if item is None:
+        raise ReviewItemNotFound(item_id)
+    return item
+
+
+def approve_review_item(
+    db: Session, user_id: UUID, item_id: UUID, decision: ReviewDecision
+) -> Application:
+    item = _get_pending_item(db, user_id, item_id)
+
+    company = decision.company or item.extracted_company or ""
+    position = decision.position or item.extracted_position or ""
+    status_value = decision.status or item.extracted_status or "applied"
+    status_date = decision.status_date or item.extracted_status_date
+
+    if item.proposed_action == "update" and item.matched_application_id is not None:
+        application = db.get(Application, item.matched_application_id)
+        if application is None:
+            raise ReviewItemNotFound(item_id)
+        if company:
+            application.company = company
+        if position:
+            application.position = position
+        application.status = ApplicationStatus(status_value)
+        if status_date is not None:
+            application.applied_at = status_date
+    else:
+        application = Application(
+            user_id=user_id,
+            company=company,
+            position=position,
+            status=ApplicationStatus(status_value),
+            applied_at=status_date,
+            source="gmail",
+        )
+        db.add(application)
+        db.flush()
+
+    item.review_status = "approved"
+    item.matched_application_id = application.id
+    db.commit()
+    db.refresh(application)
+    return application
+
+
+def reject_review_item(db: Session, user_id: UUID, item_id: UUID) -> None:
+    item = _get_pending_item(db, user_id, item_id)
+    item.review_status = "rejected"
+    db.commit()
