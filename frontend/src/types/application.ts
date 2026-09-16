@@ -5,6 +5,7 @@ export const APPLICATION_STATUSES = [
   'rejected',
   'offer',
   'withdrawn',
+  'other',
 ] as const
 
 export type ApplicationStatus = (typeof APPLICATION_STATUSES)[number]
@@ -15,6 +16,7 @@ export interface Application {
   position: string
   status: ApplicationStatus
   applied_at: string | null
+  source: 'manual' | 'gmail'
   created_at: string
   updated_at: string
 }

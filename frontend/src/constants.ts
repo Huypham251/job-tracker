@@ -7,6 +7,7 @@ export const STATUS_LABELS: Record<ApplicationStatus, string> = {
   rejected: 'Rejected',
   offer: 'Offer',
   withdrawn: 'Withdrawn',
+  other: 'Other',
 }
 
 export const STATUS_STYLES: Record<ApplicationStatus, string> = {
@@ -16,4 +17,5 @@ export const STATUS_STYLES: Record<ApplicationStatus, string> = {
   rejected: 'bg-red-100 text-red-800',
   offer: 'bg-green-100 text-green-800',
   withdrawn: 'bg-gray-100 text-gray-700',
+  other: 'bg-gray-100 text-gray-700',
 }
