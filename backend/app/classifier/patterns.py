@@ -2,7 +2,12 @@ STATUS_PATTERNS: dict[str, list[tuple[str, int]]] = {
     "applied": [
         (r"thank you for applying", 3),
         (r"application (?:has been )?received", 3),
-        (r"we(?:'ve| have) received your application", 3),
+        # Matches with or without the auxiliary verb: plain "We received your
+        # application" (no "'ve"/"have") is an extremely common phrasing that
+        # the earlier we(?:'ve| have) received... form (requiring the
+        # auxiliary) missed entirely, dropping straight to generic boosters
+        # and often landing below JOB_RELATED_THRESHOLD.
+        (r"(?:we|i)(?:'ve| have)? received your application", 3),
         (r"successfully applied", 2),
     ],
     "oa": [

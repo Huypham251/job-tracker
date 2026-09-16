@@ -75,7 +75,7 @@ def get_message_summary(access_token: str, message_id: str) -> dict:
         # needs headers/snippet for display purposes (the Gmail test-fetch
         # endpoint, and ProcessedMessage's subject/sender/snippet fields).
         # get_message_body() below fetches the full body separately, only
-        # when the pipeline needs it for LLM extraction (see the Phase 4
+        # when the pipeline needs it for classification (see the Phase 4
         # spec §11, data minimization — the body itself is never persisted).
         params={
             "format": "metadata",
@@ -137,8 +137,8 @@ def _clean_text(raw: str, *, is_html: bool) -> str:
 
 def get_message_body(access_token: str, message_id: str) -> str:
     # format=full (not Phase 3's format=metadata) — reliable extraction genuinely
-    # needs body content. What's sent onward to the LLM is still minimized: cleaned
-    # plain text only, truncated, never the raw MIME structure or attachments.
+    # needs body content. What's sent onward to the classifier is still minimized:
+    # cleaned plain text only, truncated, never the raw MIME structure or attachments.
     response = httpx.get(
         f"{GMAIL_API_BASE}/messages/{message_id}",
         headers={"Authorization": f"Bearer {access_token}"},

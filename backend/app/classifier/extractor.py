@@ -1,14 +1,23 @@
 import re
 from typing import Protocol
 
+from pydantic import ValidationError
+
+from app.classifier.fields import find_company, find_position
 from app.classifier.patterns import (
     ATS_DOMAINS,
+    DOMAIN_CONFIDENCE_BONUS,
     DOMAIN_RELATEDNESS_BONUS,
+    EXTRACTION_PENALTY,
     GENERIC_JOB_PATTERNS,
+    JOB_RELATED_THRESHOLD,
+    JOB_SIGNAL_NORM,
+    MARGIN_NORM,
     NEGATIVE_PATTERNS,
     STATUS_PATTERNS,
 )
 from app.classifier.schemas import EmailExtraction
+from app.classifier.text import combine_subject_body, extract_sender_domain, normalize_text, parse_email_date
 
 
 class Extractor(Protocol):
@@ -45,15 +54,23 @@ def classify(text: str, sender_domain: str) -> tuple[dict[str, int], int, int]:
     return status_scores, job_signal, negative_signal
 
 
-from app.classifier.fields import find_company, find_position
-from app.classifier.patterns import (
-    DOMAIN_CONFIDENCE_BONUS,
-    EXTRACTION_PENALTY,
-    JOB_RELATED_THRESHOLD,
-    JOB_SIGNAL_NORM,
-    MARGIN_NORM,
-)
-from app.classifier.text import combine_subject_body, extract_sender_domain, normalize_text, parse_email_date
+def _build_extraction(**kwargs) -> EmailExtraction:
+    """Construct EmailExtraction, translating a pydantic validation failure (e.g. a
+    captured company/position exceeding max_length=255) into ClassificationError.
+
+    Without this, pydantic.ValidationError propagates straight out of
+    classify_and_extract. That's not ClassificationError, so
+    app/pipeline/service.py's `except (GoogleApiError, ClassificationError)` doesn't
+    catch it: the exception escapes the route as an uncaught 500, the message never
+    gets written as a ProcessedMessage row, and every future "Process Inbox" click
+    hits the same message and 500s again — a permanently wedged inbox. Raising
+    ClassificationError instead lets the pipeline's existing handling skip just this
+    one message and continue the batch.
+    """
+    try:
+        return EmailExtraction(**kwargs)
+    except ValidationError as exc:
+        raise ClassificationError(f"invalid extraction fields: {exc}") from exc
 
 
 class RuleBasedExtractor:
@@ -70,7 +87,7 @@ class RuleBasedExtractor:
 
         if not is_job_related:
             confidence = max(0.0, min(1.0, base))
-            return EmailExtraction(is_job_related=False, confidence=confidence)
+            return _build_extraction(is_job_related=False, confidence=confidence)
 
         ranked = sorted(status_scores.items(), key=lambda kv: kv[1], reverse=True)
         top_status, top_score = ranked[0]
@@ -91,7 +108,7 @@ class RuleBasedExtractor:
             f"company via {company_tier}; position via {position_tier}"
         )
 
-        return EmailExtraction(
+        return _build_extraction(
             is_job_related=True,
             confidence=confidence,
             company=company,

@@ -143,17 +143,21 @@ and no cost — classification and extraction run entirely locally using a deter
 rule-based classifier (`backend/app/classifier/`).
 
 1. On the dashboard, click **Process Inbox**. This fetches your recent Gmail messages (up
-   to `PIPELINE_BATCH_LIMIT`, default 20), classifies each one locally, and either
-   auto-creates/updates an application, ignores it, or adds it to the **Needs review**
-   queue below the Gmail panel. Nothing about this step leaves your machine.
+   to `PIPELINE_BATCH_LIMIT`, default 20) via the Gmail API, then classifies each one
+   locally and either auto-creates/updates an application, ignores it, or adds it to the
+   **Needs review** queue below the Gmail panel. The fetch step still talks to Gmail;
+   classification and extraction themselves never leave your machine and call no external
+   service.
 2. For anything in the review queue, **Approve** (optionally editing a field first) or
    **Reject**. Automation never touches an application you created by hand — those always
    go through this queue, regardless of how confident the extraction was.
 3. `backend/evaluation/dataset.jsonl` and `backend/evaluation/run_eval.py` measure
    classification/extraction accuracy against a labeled set — run
    `uv run python -m evaluation.run_eval` from `backend/` any time; it costs nothing.
-   `backend/tests/test_evaluation_accuracy.py` runs the same check automatically as part
-   of the normal test suite.
+   `backend/tests/test_evaluation_accuracy.py` runs a subset of the same check
+   (is_job_related, status, company, and position accuracy, each against its own minimum
+   bar) automatically as part of the normal test suite; it doesn't print every number
+   `run_eval.py` does, so run `run_eval.py` directly for the full picture.
 
 Full design: `docs/superpowers/specs/2026-09-15-job-tracker-phase-4b-local-classifier-design.md`
 

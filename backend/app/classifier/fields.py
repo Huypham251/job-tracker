@@ -36,13 +36,29 @@ _ROLE_SUFFIX_WORDS = {"recruiting", "talent", "careers", "hr", "team"}
 _COMPANY_TOKEN = r"(?-i:[A-Z][\w&'\-]*(?:\s[A-Z][\w&'\-]*){0,4})"
 _COMPANY_BOUNDARY = r"(?=[.,!]|\s+(?:for|and|regarding|about|which|who)\b|\s*$)"
 
+# Job titles are short, word-shaped strings — never sentence punctuation, never
+# many words. Bounded the same way _COMPANY_TOKEN above is bounded, instead of
+# the old unbounded, lazy `.+?`. `.+?` is lazy (tries the shortest span first),
+# not bounded — it still expands past a short title and across an entire
+# sentence whenever the *first* "for the ... position/role" substring in the
+# text isn't the real one, e.g. "Thank you for the time you spent with our
+# team last week. We would like to invite you to interview for the Senior
+# Backend Engineer position at Acme Corp." naively captures everything from
+# "the time you spent...for the Senior Backend Engineer" as the "position"
+# instead of just "Senior Backend Engineer" — a ~100-character garbage string
+# that still gets tier="template" (zero confidence penalty) and auto-applies.
+# `/` and `+` are included (alongside the word/company token's other allowed
+# punctuation) since real titles like "Software Engineer II" or
+# "Full-Stack/Backend" use them.
+_POSITION_TOKEN = r"[\w&'/+\-]+(?:\s[\w&'/+\-]+){0,5}"
+
 # "you" added to the leading-verb alternation (Task 8 calibration): offer
 # emails commonly phrase this as "pleased to offer you the X position at Y"
 # — the word directly before "the" is the direct object "you", not one of
 # the original for/to/in prepositions, so that phrasing fell through to the
 # weaker domain-derived company guess and to no position match at all.
 _POSITION_AT_COMPANY_RE = re.compile(
-    rf"(?:for|to|in|you) the (?P<position>.+?) (?:position|role) at (?P<company>{_COMPANY_TOKEN}){_COMPANY_BOUNDARY}",
+    rf"(?:for|to|in|you) the (?P<position>{_POSITION_TOKEN}) (?:position|role) at (?P<company>{_COMPANY_TOKEN}){_COMPANY_BOUNDARY}",
     re.IGNORECASE,
 )
 _APPLICATION_TO_COMPANY_RE = re.compile(
@@ -50,7 +66,7 @@ _APPLICATION_TO_COMPANY_RE = re.compile(
     re.IGNORECASE,
 )
 _POSITION_ROLE_RE = re.compile(
-    r"for the (?P<position>.+?) (?:position|role)\b",
+    rf"for the (?P<position>{_POSITION_TOKEN}) (?:position|role)\b",
     re.IGNORECASE,
 )
 
@@ -92,6 +108,8 @@ def find_company(text: str, sender: str) -> tuple[str | None, str]:
     return None, "none"
 
 
+# `sender` is intentionally unused here — kept only for signature symmetry
+# with find_company (which does use it), not a bug.
 def find_position(text: str, sender: str) -> tuple[str | None, str]:
     match = _POSITION_AT_COMPANY_RE.search(text)
     if match:
