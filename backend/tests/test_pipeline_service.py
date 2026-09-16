@@ -187,6 +187,38 @@ def test_process_inbox_never_regresses_a_specific_status_to_other(db_session, us
     assert existing.status == ApplicationStatus.interview  # untouched
 
 
+def test_process_inbox_queues_ambiguous_other_instead_of_ignoring_it(db_session, user, monkeypatch) -> None:
+    _connect_gmail(db_session, user)
+    # Reuses the same mid-range fuzzy-score scenario as
+    # test_find_candidate_flags_ambiguous_for_a_mid_range_score: a single
+    # candidate scoring 60-84 against the extraction is ambiguous, not a
+    # confident match.
+    existing = Application(
+        user_id=user.id, company="Acme Corp", position="Backend Developer",
+        status=ApplicationStatus.interview, source="gmail",
+    )
+    db_session.add(existing)
+    db_session.commit()
+
+    monkeypatch.setattr(google_api, "list_message_ids", lambda token, limit: ["m1"])
+    monkeypatch.setattr(google_api, "get_message_summary", lambda token, mid: _make_summary(mid, "Some update"))
+    monkeypatch.setattr(google_api, "get_message_body", lambda token, mid: "body")
+    extractor = _FakeExtractor(
+        {
+            "Some update": EmailExtraction(
+                is_job_related=True, confidence=0.95, company="Acme", position="Backend Engineer", status="other"
+            )
+        }
+    )
+
+    result = service.process_inbox(db_session, user.id, extractor)
+
+    assert result.queued_for_review == 1
+    assert result.ignored == 0
+    db_session.refresh(existing)
+    assert existing.status == ApplicationStatus.interview  # untouched
+
+
 def test_process_inbox_respects_the_batch_limit(db_session, user, monkeypatch) -> None:
     _connect_gmail(db_session, user)
     captured_limits = []

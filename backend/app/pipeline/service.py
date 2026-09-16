@@ -43,8 +43,8 @@ def process_inbox(db: Session, user_id: UUID, extractor: Extractor) -> ProcessRe
     ignored = 0
 
     for message_id in new_message_ids:
-        summary = google_api.get_message_summary(access_token, message_id)
         try:
+            summary = google_api.get_message_summary(access_token, message_id)
             body = google_api.get_message_body(access_token, message_id)
             extraction = extractor.classify_and_extract(
                 subject=summary["subject"],
