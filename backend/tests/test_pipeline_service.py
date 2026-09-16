@@ -8,7 +8,7 @@ from app.gmail import google_api
 from app.gmail.crypto import encrypt_token
 from app.gmail.exceptions import GmailNotConnected
 from app.gmail.models import GmailConnection
-from app.llm.schemas import EmailExtraction
+from app.classifier.schemas import EmailExtraction
 from app.pipeline import service
 from app.pipeline.models import ProcessedMessage
 from datetime import datetime, timedelta, timezone

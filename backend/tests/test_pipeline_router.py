@@ -7,8 +7,8 @@ from app.applications.models import Application, ApplicationStatus
 from app.gmail import google_api
 from app.gmail.crypto import encrypt_token
 from app.gmail.models import GmailConnection
-from app.llm import client as llm_client
-from app.llm.schemas import EmailExtraction
+from app.classifier import extractor as classifier_extractor
+from app.classifier.schemas import EmailExtraction
 from app.pipeline.models import ProcessedMessage
 
 BASE = "/api/v1/pipeline"
@@ -77,7 +77,7 @@ def test_process_endpoint_returns_summary(
     )
     monkeypatch.setattr(google_api, "get_message_body", lambda token, mid: "body")
     monkeypatch.setattr(
-        llm_client.AnthropicExtractor,
+        classifier_extractor.RuleBasedExtractor,
         "classify_and_extract",
         lambda self, **kwargs: EmailExtraction(
             is_job_related=True, confidence=0.95, company="Acme", position="SWE", status="applied"

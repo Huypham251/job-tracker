@@ -10,8 +10,8 @@ from app.core.config import settings
 from app.gmail import google_api
 from app.gmail import service as gmail_service
 from app.gmail.exceptions import GmailNotConnected
-from app.llm.client import Extractor, LLMExtractionError
-from app.llm.schemas import EmailExtraction
+from app.classifier.extractor import ClassificationError, Extractor
+from app.classifier.schemas import EmailExtraction
 from app.pipeline import matching
 from app.pipeline.exceptions import ReviewItemNotFound
 from app.pipeline.models import ProcessedMessage
@@ -54,7 +54,7 @@ def process_inbox(db: Session, user_id: UUID, extractor: Extractor) -> ProcessRe
                 date=summary["date"],
                 body=body,
             )
-        except (google_api.GoogleApiError, LLMExtractionError):
+        except (google_api.GoogleApiError, ClassificationError):
             logger.warning("Skipping message %s: fetch or extraction failed", message_id)
             continue
 
