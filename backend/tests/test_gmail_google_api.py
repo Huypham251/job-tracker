@@ -147,3 +147,49 @@ def test_get_message_body_raises_on_error(monkeypatch) -> None:
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(400, {}))
     with pytest.raises(google_api.GoogleApiError):
         google_api.get_message_body("token", "m1")
+
+
+def test_list_message_ids_page_returns_ids_and_next_page_token(monkeypatch) -> None:
+    captured = {}
+
+    def fake_get(url, headers, params, timeout):
+        captured["params"] = params
+        return _FakeResponse(200, {"messages": [{"id": "m1"}, {"id": "m2"}], "nextPageToken": "next-tok"})
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    ids, next_page_token = google_api.list_message_ids_page(
+        "token", query="after:2026/01/01", page_token="prev-tok", max_results=100
+    )
+
+    assert ids == ["m1", "m2"]
+    assert next_page_token == "next-tok"
+    assert captured["params"]["q"] == "after:2026/01/01"
+    assert captured["params"]["pageToken"] == "prev-tok"
+    assert captured["params"]["maxResults"] == 100
+
+
+def test_list_message_ids_page_omits_page_token_param_when_none(monkeypatch) -> None:
+    captured = {}
+
+    def fake_get(url, headers, params, timeout):
+        captured["params"] = params
+        return _FakeResponse(200, {"messages": []})
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    ids, next_page_token = google_api.list_message_ids_page(
+        "token", query="after:2026/01/01", page_token=None, max_results=100
+    )
+
+    assert ids == []
+    assert next_page_token is None
+    assert "pageToken" not in captured["params"]
+
+
+def test_list_message_ids_page_raises_on_error(monkeypatch) -> None:
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(400, {}))
+    with pytest.raises(google_api.GoogleApiError):
+        google_api.list_message_ids_page(
+            "token", query="after:2026/01/01", page_token=None, max_results=100
+        )

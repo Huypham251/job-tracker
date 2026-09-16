@@ -67,6 +67,26 @@ def list_message_ids(access_token: str, *, limit: int) -> list[str]:
     return [item["id"] for item in response.json().get("messages", [])]
 
 
+def list_message_ids_page(
+    access_token: str, *, query: str, page_token: str | None, max_results: int
+) -> tuple[list[str], str | None]:
+    params: dict[str, str | int] = {"maxResults": max_results, "q": query}
+    if page_token is not None:
+        params["pageToken"] = page_token
+
+    response = httpx.get(
+        f"{GMAIL_API_BASE}/messages",
+        headers={"Authorization": f"Bearer {access_token}"},
+        params=params,
+        timeout=_TIMEOUT,
+    )
+    if response.status_code != 200:
+        raise GoogleApiError(f"message list failed: {response.status_code}")
+    payload = response.json()
+    ids = [item["id"] for item in payload.get("messages", [])]
+    return ids, payload.get("nextPageToken")
+
+
 def get_message_summary(access_token: str, message_id: str) -> dict:
     response = httpx.get(
         f"{GMAIL_API_BASE}/messages/{message_id}",
