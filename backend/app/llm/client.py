@@ -34,7 +34,10 @@ class AnthropicExtractor:
                 messages=[
                     {
                         "role": "user",
-                        "content": f"Subject: {subject}\nFrom: {sender}\nDate: {date}\n\n{body}",
+                        "content": (
+                            f"Subject: {subject}\nFrom: {sender}\nDate: {date}\n\n"
+                            f"<email_body>\n{body}\n</email_body>"
+                        ),
                     }
                 ],
             )
