@@ -1,20 +1,21 @@
+# backend/evaluation/run_eval.py
 """Run the classification/extraction pipeline against a labeled dataset.
 
-This is NOT part of the pytest suite — every run spends real Anthropic API
-money. Run manually:
+Local classification has no external dependency and costs nothing to run —
+unlike the earlier Anthropic-backed version, this is safe to run as often as
+you like. Run manually:
 
     cd backend
     uv run python -m evaluation.run_eval
 
-The dataset (evaluation/dataset.jsonl) currently has one illustrative example.
-Building a real labeled set is a separate, interactive step — see the
-`claude-api` skill's `build-eval` workflow.
+The same dataset (evaluation/dataset.jsonl) also backs the always-on
+regression check in tests/test_evaluation_accuracy.py.
 """
 
 import json
 from pathlib import Path
 
-from app.llm.client import AnthropicExtractor
+from app.classifier.extractor import RuleBasedExtractor
 
 DATASET_PATH = Path(__file__).parent / "dataset.jsonl"
 
@@ -25,7 +26,7 @@ def _load_dataset() -> list[dict]:
 
 
 def main() -> None:
-    extractor = AnthropicExtractor()
+    extractor = RuleBasedExtractor()
     examples = _load_dataset()
 
     classification_correct = 0
