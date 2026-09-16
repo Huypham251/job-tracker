@@ -2,6 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **⚠️ Superseded (2026-09-16):** The `app/llm/` package and Anthropic SDK described
+> here were executed as written, then fully replaced by
+> `2026-09-15-job-tracker-phase-4b-local-classifier.md` — `app/llm/` was deleted and the
+> `anthropic` dependency removed. This document is kept as the historical record of how
+> the pipeline's matching/trust-model/DB/API/frontend layers (still current) were first
+> built; for classification/extraction, see the 4b plan instead.
+
 **Goal:** Turn fetched Gmail messages into structured job-application data, match them against existing applications, and create/update applications automatically when confident or via a human-reviewed queue otherwise — without ever silently overwriting a manually-entered fact.
 
 **Architecture:** A new `app/llm/` package wraps the Anthropic SDK behind a small `Extractor` protocol (`client.messages.parse(output_format=EmailExtraction)` for validated structured output); a new `app/pipeline/` package orchestrates fetch → extract → match (`rapidfuzz`) → decide → persist, backed by a new `processed_messages` audit/idempotency/review-queue table. A row-level trust rule — never auto-touch a `source="manual"` application, regardless of confidence — is the entire mechanism for protecting manually-entered data. Everything is triggered by a manual "Process Inbox" action, reusing Phase 3's Gmail-fetch plumbing; no background jobs yet.

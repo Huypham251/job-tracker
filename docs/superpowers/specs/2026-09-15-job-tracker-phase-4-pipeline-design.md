@@ -2,6 +2,13 @@
 
 **Date:** 2026-09-15
 **Status:** Approved for implementation planning
+**⚠️ Superseded (2026-09-16):** §2 (LLM provider decision), §5 (Classification &
+Extraction — the Anthropic API call), and §10 (Evaluation Strategy) were replaced by
+`2026-09-15-job-tracker-phase-4b-local-classifier-design.md` — the shipped
+implementation uses a local, deterministic, rule-based classifier (`app/classifier/`),
+not an LLM API. Every other section here (§4 data model, §6 matching, §7 trust model,
+§8 API contract, §9 frontend structure, §11-13 minus the LLM-specific rows) reflects
+what's actually running — read this doc for those, and the 4b doc for classification.
 **Scope:** Phase 4 only — turn fetched Gmail messages into structured job-application
 information, match them against existing applications, and create/update applications
 either automatically (high confidence) or via a human-reviewed queue (low confidence,
