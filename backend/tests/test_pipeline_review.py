@@ -83,6 +83,44 @@ def test_approve_updates_an_existing_matched_application(db_session, user) -> No
     assert application.source == "manual"  # approving an update never changes provenance
 
 
+def test_approve_never_regresses_a_specific_status_to_other(db_session, user) -> None:
+    existing = Application(
+        user_id=user.id, company="Acme", position="SWE", status=ApplicationStatus.interview, source="gmail"
+    )
+    db_session.add(existing)
+    db_session.commit()
+    item = _make_pending_item(
+        db_session,
+        user,
+        proposed_action="update",
+        matched_application_id=existing.id,
+        extracted_status="other",
+    )
+
+    application = service.approve_review_item(db_session, user.id, item.id, ReviewDecision())
+
+    assert application.status == ApplicationStatus.interview
+
+
+def test_approve_preserves_existing_status_when_none_available(db_session, user) -> None:
+    existing = Application(
+        user_id=user.id, company="Acme", position="SWE", status=ApplicationStatus.interview, source="gmail"
+    )
+    db_session.add(existing)
+    db_session.commit()
+    item = _make_pending_item(
+        db_session,
+        user,
+        proposed_action="update",
+        matched_application_id=existing.id,
+        extracted_status=None,
+    )
+
+    application = service.approve_review_item(db_session, user.id, item.id, ReviewDecision())
+
+    assert application.status == ApplicationStatus.interview
+
+
 def test_reject_marks_item_rejected_without_touching_applications(db_session, user) -> None:
     item = _make_pending_item(db_session, user)
 

@@ -2,6 +2,7 @@ import logging
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.applications.models import Application, ApplicationStatus
@@ -61,26 +62,31 @@ def process_inbox(db: Session, user_id: UUID, extractor: Extractor) -> ProcessRe
             db, user_id, extraction
         )
 
-        db.add(
-            ProcessedMessage(
-                user_id=user_id,
-                gmail_message_id=message_id,
-                subject=summary["subject"],
-                sender=summary["from_"],
-                message_date=summary["date"],
-                snippet=summary["snippet"],
-                is_job_related=extraction.is_job_related,
-                confidence=extraction.confidence,
-                extracted_company=extraction.company,
-                extracted_position=extraction.position,
-                extracted_status=extraction.status,
-                extracted_status_date=extraction.status_date,
-                matched_application_id=matched_application_id,
-                proposed_action=proposed_action,
-                review_status=review_status,
+        try:
+            db.add(
+                ProcessedMessage(
+                    user_id=user_id,
+                    gmail_message_id=message_id,
+                    subject=summary["subject"],
+                    sender=summary["from_"],
+                    message_date=summary["date"],
+                    snippet=summary["snippet"],
+                    is_job_related=extraction.is_job_related,
+                    confidence=extraction.confidence,
+                    extracted_company=extraction.company,
+                    extracted_position=extraction.position,
+                    extracted_status=extraction.status,
+                    extracted_status_date=extraction.status_date,
+                    matched_application_id=matched_application_id,
+                    proposed_action=proposed_action,
+                    review_status=review_status,
+                )
             )
-        )
-        db.commit()
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+            logger.warning("Skipping message %s: failed to persist", message_id)
+            continue
 
         if review_status == "auto_applied":
             auto_applied += 1
@@ -114,9 +120,10 @@ def _apply_decision(
         return "ignored", match.application.id, None
 
     high_confidence = extraction.confidence >= settings.llm_confidence_threshold
-    touches_manual = match.application is not None and match.application.source == "manual"
+    is_auto_managed = match.application is not None and match.application.source == "gmail"
+    touches_existing_application = match.application is not None
 
-    if touches_manual or match.ambiguous or not high_confidence:
+    if (touches_existing_application and not is_auto_managed) or match.ambiguous or not high_confidence:
         return (
             "pending_review",
             match.application.id if match.application else None,
@@ -177,18 +184,21 @@ def approve_review_item(
 
     company = decision.company or item.extracted_company or ""
     position = decision.position or item.extracted_position or ""
-    status_value = decision.status or item.extracted_status or "applied"
+    status_value = decision.status or item.extracted_status
     status_date = decision.status_date or item.extracted_status_date
 
     if item.proposed_action == "update" and item.matched_application_id is not None:
         application = db.get(Application, item.matched_application_id)
-        if application is None:
+        if application is None or application.user_id != user_id:
             raise ReviewItemNotFound(item_id)
         if company:
             application.company = company
         if position:
             application.position = position
-        application.status = ApplicationStatus(status_value)
+        if status_value == "other" and application.status.value in _MORE_SPECIFIC_STATUSES:
+            pass  # never regress a specific status to "other" — matches _apply_decision's guard
+        elif status_value is not None:
+            application.status = ApplicationStatus(status_value)
         if status_date is not None:
             application.applied_at = status_date
     else:
@@ -196,7 +206,7 @@ def approve_review_item(
             user_id=user_id,
             company=company,
             position=position,
-            status=ApplicationStatus(status_value),
+            status=ApplicationStatus(status_value or "applied"),
             applied_at=status_date,
             source="gmail",
         )

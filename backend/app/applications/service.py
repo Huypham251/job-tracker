@@ -43,6 +43,7 @@ def update_application(
     application = get_application(db, user_id, application_id)
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(application, field, value)
+    application.source = "manual"
     db.commit()
     db.refresh(application)
     return application

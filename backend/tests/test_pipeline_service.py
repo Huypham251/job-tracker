@@ -187,6 +187,73 @@ def test_process_inbox_never_regresses_a_specific_status_to_other(db_session, us
     assert existing.status == ApplicationStatus.interview  # untouched
 
 
+def test_process_inbox_fails_closed_on_unexpected_source_value(db_session, user, monkeypatch) -> None:
+    _connect_gmail(db_session, user)
+    # Constructed directly, bypassing any application-layer validation, to
+    # simulate a future data import / hand-run SQL fix / typo / NULL that
+    # isn't exactly "manual" or "gmail".
+    existing = Application(
+        user_id=user.id, company="Acme", position="SWE", status=ApplicationStatus.applied, source="unknown"
+    )
+    db_session.add(existing)
+    db_session.commit()
+
+    monkeypatch.setattr(google_api, "list_message_ids", lambda token, limit: ["m1"])
+    monkeypatch.setattr(google_api, "get_message_summary", lambda token, mid: _make_summary(mid, "Interview invite"))
+    monkeypatch.setattr(google_api, "get_message_body", lambda token, mid: "body")
+    extractor = _FakeExtractor(
+        {
+            "Interview invite": EmailExtraction(
+                is_job_related=True, confidence=0.99, company="Acme", position="SWE", status="interview"
+            )
+        }
+    )
+
+    result = service.process_inbox(db_session, user.id, extractor)
+
+    assert result.queued_for_review == 1
+    assert result.auto_applied == 0
+    db_session.refresh(existing)
+    assert existing.status == ApplicationStatus.applied  # untouched
+
+
+def test_process_inbox_skips_message_on_persistence_failure(db_session, user, monkeypatch) -> None:
+    _connect_gmail(db_session, user)
+    monkeypatch.setattr(google_api, "list_message_ids", lambda token, limit: ["m1", "m2"])
+
+    # ProcessedMessage.subject is String(998) — a longer value raises a
+    # SQLAlchemyError (DataError) on commit, but only for the first message.
+    oversized_subject = "x" * 1000
+
+    def fake_get_message_summary(token, mid):
+        if mid == "m1":
+            return _make_summary(mid, oversized_subject)
+        return _make_summary(mid, "App received")
+
+    monkeypatch.setattr(google_api, "get_message_summary", fake_get_message_summary)
+    monkeypatch.setattr(google_api, "get_message_body", lambda token, mid: "body")
+    extractor = _FakeExtractor(
+        {
+            oversized_subject: EmailExtraction(
+                is_job_related=True, confidence=0.95, company="Acme", position="SWE", status="applied"
+            ),
+            "App received": EmailExtraction(
+                is_job_related=True, confidence=0.95, company="Beta", position="PM", status="applied"
+            ),
+        }
+    )
+
+    result = service.process_inbox(db_session, user.id, extractor)
+
+    assert result.processed == 2
+    stored = db_session.query(ProcessedMessage).one()
+    assert stored.gmail_message_id == "m2"
+    assert stored.review_status == "auto_applied"
+    apps = db_session.query(Application).all()
+    assert len(apps) == 1
+    assert apps[0].company == "Beta"
+
+
 def test_process_inbox_queues_ambiguous_other_instead_of_ignoring_it(db_session, user, monkeypatch) -> None:
     _connect_gmail(db_session, user)
     # Reuses the same mid-range fuzzy-score scenario as

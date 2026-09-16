@@ -19,6 +19,13 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Postgres allows ALTER TYPE ... ADD VALUE inside a transaction (PG12+),
+    # but the NEW value cannot be used in that SAME transaction. Alembic runs
+    # each migration in one transaction by default, so a future migration
+    # that both adds a new enum value AND references it (an UPDATE, a CHECK
+    # constraint, a backfill) in the same file will fail on a fresh database
+    # where migrations run back-to-back. Split such a change across two
+    # migrations if that need ever arises.
     op.execute("ALTER TYPE application_status ADD VALUE IF NOT EXISTS 'other'")
 
     op.add_column(

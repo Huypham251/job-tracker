@@ -71,9 +71,12 @@ def get_message_summary(access_token: str, message_id: str) -> dict:
     response = httpx.get(
         f"{GMAIL_API_BASE}/messages/{message_id}",
         headers={"Authorization": f"Bearer {access_token}"},
-        # format=metadata + an explicit header allowlist — we deliberately
-        # never fetch the message body, even though gmail.readonly permits
-        # it (see spec §10, data minimization).
+        # format=metadata + an explicit header allowlist — this function only
+        # needs headers/snippet for display purposes (the Gmail test-fetch
+        # endpoint, and ProcessedMessage's subject/sender/snippet fields).
+        # get_message_body() below fetches the full body separately, only
+        # when the pipeline needs it for LLM extraction (see the Phase 4
+        # spec §11, data minimization — the body itself is never persisted).
         params={
             "format": "metadata",
             "metadataHeaders": ["Subject", "From", "Date"],
