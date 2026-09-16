@@ -17,11 +17,32 @@ _ROLE_SUFFIX_WORDS = {"recruiting", "talent", "careers", "hr", "team"}
 # engine backtracks down to the shortest span that satisfies the lookahead, so
 # it still finds the correct short boundary — verified by hand against every
 # example in evaluation/dataset.jsonl (Task 7) before relying on it here.
-_COMPANY_TOKEN = r"[\w&'\-]+(?:\s[\w&'\-]+){0,4}"
+#
+# Each word must start with an uppercase letter (Task 8 calibration): subject
+# and body are joined with a single space and no sentence-ending punctuation
+# between them (see text.combine_subject_body), so when a subject itself
+# matches one of these templates (e.g. "Your application to Acme Corp") with
+# nothing terminating it before the body's next sentence begins, the old
+# all-word-chars token could swallow the body's leading words too (e.g.
+# "Acme Corp Thank you" — "Thank you" is a real lowercase-tailed clause that
+# only stops matching once "you" breaks the per-word capital requirement).
+# Company names are capitalized in every example in the dataset, and English
+# sentence-internal words following a company mention are effectively never
+# an all-capitalized run, so this filters out the overcapture while still
+# matching every legitimate multi-word company name observed. The `(?-i:...)`
+# group turns off the surrounding pattern's re.IGNORECASE just for this
+# capitalization check (IGNORECASE would otherwise make [A-Z] match lowercase
+# too, defeating the point).
+_COMPANY_TOKEN = r"(?-i:[A-Z][\w&'\-]*(?:\s[A-Z][\w&'\-]*){0,4})"
 _COMPANY_BOUNDARY = r"(?=[.,!]|\s+(?:for|and|regarding|about|which|who)\b|\s*$)"
 
+# "you" added to the leading-verb alternation (Task 8 calibration): offer
+# emails commonly phrase this as "pleased to offer you the X position at Y"
+# — the word directly before "the" is the direct object "you", not one of
+# the original for/to/in prepositions, so that phrasing fell through to the
+# weaker domain-derived company guess and to no position match at all.
 _POSITION_AT_COMPANY_RE = re.compile(
-    rf"(?:for|to|in) the (?P<position>.+?) (?:position|role) at (?P<company>{_COMPANY_TOKEN}){_COMPANY_BOUNDARY}",
+    rf"(?:for|to|in|you) the (?P<position>.+?) (?:position|role) at (?P<company>{_COMPANY_TOKEN}){_COMPANY_BOUNDARY}",
     re.IGNORECASE,
 )
 _APPLICATION_TO_COMPANY_RE = re.compile(

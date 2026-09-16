@@ -12,9 +12,19 @@ from app.classifier.extractor import RuleBasedExtractor
 
 DATASET_PATH = Path(__file__).parent.parent / "evaluation" / "dataset.jsonl"
 
-# Calibrated in Task 8 against this exact dataset; see that task's commit
-# message for the observed numbers this bar was set from.
-MIN_CLASSIFICATION_ACCURACY = 0.8
+# Calibrated 2026-09-15 against this exact 17-example dataset: after Task 8's
+# pattern fixes (company-token capitalization guard and the "you the X
+# position at Y" offer phrasing in app/classifier/fields.py), RuleBasedExtractor
+# scored 17/17 (1.00) classification accuracy, 11/11 (1.00) status accuracy,
+# 10/10 (1.00) position accuracy, and 10/11 (0.91) company accuracy (the one
+# company miss — an assessment-platform email naming the hiring company only
+# as a sentence subject in the body, with the sender domain being the ATS
+# platform, not the company, and no display name on the sender address — is an
+# accepted, documented extraction limitation, not a classification failure).
+# Set with a small margin below the observed 1.00 classification accuracy so
+# the bar doesn't flap on a single new hard example in a future dataset
+# addition, not because 0.95 is independently meaningful.
+MIN_CLASSIFICATION_ACCURACY = 0.95
 
 
 def _load_dataset() -> list[dict]:
