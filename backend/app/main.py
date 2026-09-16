@@ -10,6 +10,8 @@ from app.core.config import settings
 from app.gmail.exceptions import GmailNotConnected
 from app.gmail.google_api import GoogleApiError
 from app.gmail.router import router as gmail_router
+from app.pipeline.exceptions import ReviewItemNotFound
+from app.pipeline.router import router as pipeline_router
 
 
 def create_app() -> FastAPI:
@@ -55,6 +57,12 @@ def create_app() -> FastAPI:
             content={"detail": "Gmail request failed. Try reconnecting your Gmail account."},
         )
 
+    @app.exception_handler(ReviewItemNotFound)
+    async def handle_review_item_not_found(
+        request: Request, exc: ReviewItemNotFound
+    ) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -62,6 +70,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(applications_router, prefix="/api/v1")
     app.include_router(gmail_router, prefix="/api/v1")
+    app.include_router(pipeline_router, prefix="/api/v1")
 
     return app
 
