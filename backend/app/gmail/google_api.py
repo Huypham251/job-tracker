@@ -1,3 +1,7 @@
+import base64
+import html
+import re
+
 import httpx
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -5,6 +9,13 @@ REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 _TIMEOUT = 10.0
+
+BODY_MAX_CHARS = 4000
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_QUOTE_LINE_RE = re.compile(r"^>.*$", re.MULTILINE)
+_ON_WROTE_RE = re.compile(r"^On .+ wrote:\s*$", re.MULTILINE)
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 class GoogleApiError(Exception):
@@ -80,3 +91,62 @@ def get_message_summary(access_token: str, message_id: str) -> dict:
         "date": headers.get("Date", ""),
         "snippet": payload.get("snippet", ""),
     }
+
+
+def _decode_part(data: str) -> str:
+    padded = data + "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
+
+
+def _find_text_part(payload: dict) -> tuple[str, str] | None:
+    """Return (mime_type, decoded_text) for the first text/plain part found in this
+    payload (recursing into multipart `parts`), falling back to text/html if no plain
+    part exists anywhere. None if there's no text body at all."""
+    mime_type = payload.get("mimeType", "")
+    body_data = payload.get("body", {}).get("data")
+
+    if mime_type == "text/plain" and body_data:
+        return ("text/plain", _decode_part(body_data))
+
+    html_fallback = ("text/html", _decode_part(body_data)) if mime_type == "text/html" and body_data else None
+
+    for part in payload.get("parts", []):
+        found = _find_text_part(part)
+        if found is None:
+            continue
+        if found[0] == "text/plain":
+            return found
+        if html_fallback is None:
+            html_fallback = found
+
+    return html_fallback
+
+
+def _clean_text(raw: str, *, is_html: bool) -> str:
+    text = _ON_WROTE_RE.sub("", raw)
+    text = _QUOTE_LINE_RE.sub("", text)
+    if is_html:
+        text = _HTML_TAG_RE.sub(" ", text)
+        text = html.unescape(text)
+    text = _WHITESPACE_RE.sub(" ", text).strip()
+    return text[:BODY_MAX_CHARS]
+
+
+def get_message_body(access_token: str, message_id: str) -> str:
+    # format=full (not Phase 3's format=metadata) — reliable extraction genuinely
+    # needs body content. What's sent onward to the LLM is still minimized: cleaned
+    # plain text only, truncated, never the raw MIME structure or attachments.
+    response = httpx.get(
+        f"{GMAIL_API_BASE}/messages/{message_id}",
+        headers={"Authorization": f"Bearer {access_token}"},
+        params={"format": "full"},
+        timeout=_TIMEOUT,
+    )
+    if response.status_code != 200:
+        raise GoogleApiError(f"message body fetch failed: {response.status_code}")
+
+    found = _find_text_part(response.json().get("payload", {}))
+    if found is None:
+        return ""
+    mime_type, text = found
+    return _clean_text(text, is_html=(mime_type == "text/html"))

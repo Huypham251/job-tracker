@@ -1,3 +1,5 @@
+import base64
+
 import httpx
 import pytest
 
@@ -87,3 +89,61 @@ def test_get_message_summary_extracts_headers_and_snippet(monkeypatch) -> None:
         "date": "Wed, 1 Jan 2026 00:00:00 +0000",
         "snippet": "hello there",
     }
+
+
+def _b64(text: str) -> str:
+    return base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
+
+
+def test_get_message_body_extracts_plain_text_part(monkeypatch) -> None:
+    payload = {
+        "payload": {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": _b64("Thanks for applying to Acme.")}},
+                {"mimeType": "text/html", "body": {"data": _b64("<p>Thanks for applying to Acme.</p>")}},
+            ],
+        }
+    }
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
+    assert google_api.get_message_body("token", "m1") == "Thanks for applying to Acme."
+
+
+def test_get_message_body_falls_back_to_html_and_strips_tags(monkeypatch) -> None:
+    payload = {
+        "payload": {"mimeType": "text/html", "body": {"data": _b64("<p>Hello <b>World</b></p>")}}
+    }
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
+    assert google_api.get_message_body("token", "m1") == "Hello World"
+
+
+def test_get_message_body_strips_quoted_replies(monkeypatch) -> None:
+    raw = (
+        "Please see below.\n\n"
+        "On Mon, Jan 1, 2026 at 1:00 PM wrote:\n"
+        "> old message\n"
+        "> more old"
+    )
+    payload = {"payload": {"mimeType": "text/plain", "body": {"data": _b64(raw)}}}
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
+    assert google_api.get_message_body("token", "m1") == "Please see below."
+
+
+def test_get_message_body_truncates_long_bodies(monkeypatch) -> None:
+    long_text = "a" * 5000
+    payload = {"payload": {"mimeType": "text/plain", "body": {"data": _b64(long_text)}}}
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
+    result = google_api.get_message_body("token", "m1")
+    assert len(result) == google_api.BODY_MAX_CHARS
+
+
+def test_get_message_body_returns_empty_string_when_no_text_part(monkeypatch) -> None:
+    payload = {"payload": {"mimeType": "image/png", "body": {"data": _b64("binarydata")}}}
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
+    assert google_api.get_message_body("token", "m1") == ""
+
+
+def test_get_message_body_raises_on_error(monkeypatch) -> None:
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(400, {}))
+    with pytest.raises(google_api.GoogleApiError):
+        google_api.get_message_body("token", "m1")
