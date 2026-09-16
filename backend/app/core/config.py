@@ -16,13 +16,10 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:5173"
     cookie_secure: bool = False
     gmail_token_encryption_key: str
-    anthropic_api_key: str
-    llm_model: str = "claude-opus-5"
     # Calibrated 2026-09-15 (Task 8) against evaluation/dataset.jsonl's actual
     # RuleBasedExtractor confidence scores. This field is read by
     # app/pipeline/service.py as `confidence >= threshold` to decide auto-apply
-    # vs. review queue; it keeps its pre-Phase-4b name here (renamed to
-    # classification_confidence_threshold in Task 9).
+    # vs. review queue.
     #
     # The one wrong extraction in the dataset (a company-name miss) scores
     # 0.65. The cluster of fully-correct, high-signal extractions scores 0.825
@@ -35,7 +32,7 @@ class Settings(BaseSettings):
     # too rather than riding in on the wrong example's coattails. Keeping this
     # value here (unchanged from its prior, un-evidenced default) is itself a
     # decision made from the calibration data, not an oversight.
-    llm_confidence_threshold: float = 0.85
+    classification_confidence_threshold: float = 0.85
     pipeline_batch_limit: int = 20
 
     @property

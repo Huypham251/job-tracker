@@ -136,35 +136,26 @@ second, explicit consent a signed-in user triggers from the dashboard's
 
 Full design: `docs/superpowers/specs/2026-09-11-job-tracker-phase-3-gmail-design.md`
 
-## Classification & extraction pipeline setup (Phase 4, optional)
+## Classification & extraction pipeline setup (Phase 4b, optional)
 
-Requires Gmail to already be connected (Phase 3, above).
+Requires Gmail to already be connected (Phase 3, above). No API key, no external service,
+and no cost — classification and extraction run entirely locally using a deterministic,
+rule-based classifier (`backend/app/classifier/`).
 
-1. Get an Anthropic API key from <https://console.anthropic.com/> and set it in
-   `backend/.env`:
-   ```
-   ANTHROPIC_API_KEY=<your real key>
-   ```
-   (The placeholder value that ships by default is enough to run the test suite,
-   but every real "Process Inbox" call needs a real key.)
-2. Restart the backend.
-3. On the dashboard, click **Process Inbox**. This fetches your recent Gmail
-   messages (up to `PIPELINE_BATCH_LIMIT`, default 20), classifies each one, and
-   either auto-creates/updates an application, ignores it, or adds it to the
-   **Needs review** queue below the Gmail panel. Each email's cleaned body text
-   (headers, HTML, and quoted replies stripped) is sent to Anthropic for
-   classification — nothing is sent anywhere else, and nothing is sent for
-   messages already processed. At current Opus pricing this is roughly
-   $0.005–0.01 per email, so a 20-message batch costs about $0.10–0.20.
-4. For anything in the review queue, **Approve** (optionally editing a field
-   first) or **Reject**. Automation never touches an application you created by
-   hand — those always go through this queue, regardless of how confident the
-   extraction was.
-5. Building a real evaluation set for classification/extraction quality is a
-   separate step — see `backend/evaluation/run_eval.py` and invoke the
-   `claude-api` skill's `build-eval` workflow when you're ready to do that.
+1. On the dashboard, click **Process Inbox**. This fetches your recent Gmail messages (up
+   to `PIPELINE_BATCH_LIMIT`, default 20), classifies each one locally, and either
+   auto-creates/updates an application, ignores it, or adds it to the **Needs review**
+   queue below the Gmail panel. Nothing about this step leaves your machine.
+2. For anything in the review queue, **Approve** (optionally editing a field first) or
+   **Reject**. Automation never touches an application you created by hand — those always
+   go through this queue, regardless of how confident the extraction was.
+3. `backend/evaluation/dataset.jsonl` and `backend/evaluation/run_eval.py` measure
+   classification/extraction accuracy against a labeled set — run
+   `uv run python -m evaluation.run_eval` from `backend/` any time; it costs nothing.
+   `backend/tests/test_evaluation_accuracy.py` runs the same check automatically as part
+   of the normal test suite.
 
-Full design: `docs/superpowers/specs/2026-09-15-job-tracker-phase-4-pipeline-design.md`
+Full design: `docs/superpowers/specs/2026-09-15-job-tracker-phase-4b-local-classifier-design.md`
 
 ## Database migrations
 

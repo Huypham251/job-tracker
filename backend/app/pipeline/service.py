@@ -119,7 +119,7 @@ def _apply_decision(
     ):
         return "ignored", match.application.id, None
 
-    high_confidence = extraction.confidence >= settings.llm_confidence_threshold
+    high_confidence = extraction.confidence >= settings.classification_confidence_threshold
     is_auto_managed = match.application is not None and match.application.source == "gmail"
     touches_existing_application = match.application is not None
 
