@@ -1,0 +1,1 @@
+{"subject": "Your application to Acme Corp", "sender": "careers@acme.com", "date": "Mon, 5 Jan 2026 10:00:00 +0000", "body": "Thank you for applying to the Software Engineer position at Acme Corp. We have received your application and will be in touch.", "expected": {"is_job_related": true, "company": "Acme Corp", "position": "Software Engineer", "status": "applied"}}
