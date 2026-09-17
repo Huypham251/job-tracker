@@ -3,8 +3,13 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
+from app.classifier.schemas import EmailExtraction
+from app.gmail import google_api
+from app.gmail.crypto import encrypt_token
+from app.gmail.models import GmailConnection
+from app.pipeline.models import ProcessedMessage
 from app.sync.models import SyncJob
-from app.sync.worker import claim_next_job
+from app.sync.worker import claim_next_job, process_job
 from app.users.models import User
 
 
@@ -105,3 +110,147 @@ def test_claim_next_job_skips_a_row_locked_by_another_connection(engine) -> None
         with engine.begin() as cleanup_conn:
             cleanup_conn.execute(delete(SyncJob).where(SyncJob.id == job_id))
             cleanup_conn.execute(delete(User).where(User.id == user_id))
+
+
+class _FakeExtractor:
+    def __init__(self, results: dict[str, EmailExtraction]) -> None:
+        self._results = results
+
+    def classify_and_extract(self, *, subject, sender, date, body):
+        return self._results[subject]
+
+
+def _connect_gmail(db_session, user) -> GmailConnection:
+    connection = GmailConnection(
+        user_id=user.id,
+        google_email="alice@gmail.com",
+        access_token_encrypted=encrypt_token("access"),
+        refresh_token_encrypted=encrypt_token("refresh"),
+        token_expiry=datetime.now(timezone.utc) + timedelta(hours=1),
+        scope="https://www.googleapis.com/auth/gmail.readonly",
+    )
+    db_session.add(connection)
+    db_session.commit()
+    return connection
+
+
+def _make_summary(message_id: str, subject: str) -> dict:
+    return {"id": message_id, "subject": subject, "from_": "jobs@acme.com", "date": "d", "snippet": "s"}
+
+
+def test_process_job_pages_through_gmail_and_processes_each_message(
+    db_session, user, monkeypatch
+) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+
+    pages = [(["m1"], "page-2"), (["m2"], None)]
+
+    def fake_list_page(token, *, query, page_token, max_results):
+        return pages.pop(0)
+
+    monkeypatch.setattr(google_api, "list_message_ids_page", fake_list_page)
+    monkeypatch.setattr(google_api, "get_message_summary", lambda token, mid: _make_summary(mid, f"Subject {mid}"))
+    monkeypatch.setattr(google_api, "get_message_body", lambda token, mid: "body")
+    extractor = _FakeExtractor(
+        {
+            "Subject m1": EmailExtraction(is_job_related=False, confidence=0.99),
+            "Subject m2": EmailExtraction(
+                is_job_related=True, confidence=0.95, company="Acme", position="SWE", status="applied"
+            ),
+        }
+    )
+
+    process_job(db_session, job, extractor)
+
+    db_session.refresh(job)
+    assert job.status == "completed"
+    assert job.messages_seen == 2
+    assert job.messages_processed == 2
+    assert job.ignored == 1
+    assert job.auto_applied == 1
+    assert job.page_token is None
+    stored = {m.gmail_message_id: m for m in db_session.query(ProcessedMessage).all()}
+    assert stored["m1"].review_status == "ignored"
+    assert stored["m2"].review_status == "auto_applied"
+    assert stored["m1"].sync_job_id == job.id
+
+
+def test_process_job_checkpoints_page_token_after_each_page(db_session, user, monkeypatch) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+
+    seen_page_tokens = []
+
+    def fake_list_page(token, *, query, page_token, max_results):
+        seen_page_tokens.append(page_token)
+        if page_token is None:
+            return (["m1"], "page-2")
+        return ([], None)
+
+    monkeypatch.setattr(google_api, "list_message_ids_page", fake_list_page)
+    monkeypatch.setattr(google_api, "get_message_summary", lambda token, mid: _make_summary(mid, "Newsletter"))
+    monkeypatch.setattr(google_api, "get_message_body", lambda token, mid: "body")
+    extractor = _FakeExtractor({"Newsletter": EmailExtraction(is_job_related=False, confidence=0.99)})
+
+    process_job(db_session, job, extractor)
+
+    assert seen_page_tokens == [None, "page-2"]
+
+
+def test_process_job_skips_messages_already_processed_by_an_earlier_attempt(
+    db_session, user, monkeypatch
+) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+    db_session.add(
+        ProcessedMessage(
+            user_id=user.id, gmail_message_id="m1", subject="s", sender="jobs@acme.com",
+            message_date="d", snippet="s", is_job_related=False, confidence=0.9,
+            review_status="ignored",
+        )
+    )
+    db_session.commit()
+
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["m1"], None))
+    calls = []
+    monkeypatch.setattr(
+        google_api, "get_message_summary", lambda token, mid: calls.append(mid) or _make_summary(mid, "x")
+    )
+    extractor = _FakeExtractor({})
+
+    process_job(db_session, job, extractor)
+
+    assert calls == []  # never re-fetched
+    db_session.refresh(job)
+    assert job.status == "completed"
+    assert job.messages_processed == 0
+
+
+def test_process_job_fails_a_message_on_fetch_error_without_failing_the_job(
+    db_session, user, monkeypatch
+) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["m1"], None))
+    monkeypatch.setattr(
+        google_api, "get_message_summary",
+        lambda token, mid: (_ for _ in ()).throw(google_api.GoogleApiError("boom")),
+    )
+    extractor = _FakeExtractor({})
+
+    process_job(db_session, job, extractor)
+
+    db_session.refresh(job)
+    assert job.status == "completed"
+    assert job.failed_count == 1
+    assert job.messages_processed == 1
