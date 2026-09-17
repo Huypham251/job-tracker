@@ -142,16 +142,24 @@ Requires Gmail to already be connected (Phase 3, above). No API key, no external
 and no cost — classification and extraction run entirely locally using a deterministic,
 rule-based classifier (`backend/app/classifier/`).
 
-1. On the dashboard, click **Process Inbox**. This fetches your recent Gmail messages (up
-   to `PIPELINE_BATCH_LIMIT`, default 20) via the Gmail API, then classifies each one
-   locally and either auto-creates/updates an application, ignores it, or adds it to the
-   **Needs review** queue below the Gmail panel. The fetch step still talks to Gmail;
-   classification and extraction themselves never leave your machine and call no external
-   service.
-2. For anything in the review queue, **Approve** (optionally editing a field first) or
+1. On the dashboard, click **Sync Gmail**. This starts a background sync job — an
+   initial sync on first use (paginating back up to `gmail_sync_backfill_days`, default
+   180 days) and an incremental sync thereafter — that fetches messages via the Gmail
+   API and classifies each one locally, either auto-creating/updating an application,
+   ignoring it, or adding it to the **Needs review** queue below the Gmail panel. The
+   button shows live progress while the job runs and a summary when it finishes.
+   Classification and extraction themselves never leave your machine and call no
+   external service.
+2. **The background worker must be running** for a sync job to actually be processed —
+   clicking "Sync Gmail" only enqueues the job. In a second terminal, from `backend/`:
+   ```
+   uv run python -m app.sync.worker
+   ```
+   Without it running, the job stays queued forever.
+3. For anything in the review queue, **Approve** (optionally editing a field first) or
    **Reject**. Automation never touches an application you created by hand — those always
    go through this queue, regardless of how confident the extraction was.
-3. `backend/evaluation/dataset.jsonl` and `backend/evaluation/run_eval.py` measure
+4. `backend/evaluation/dataset.jsonl` and `backend/evaluation/run_eval.py` measure
    classification/extraction accuracy against a labeled set — run
    `uv run python -m evaluation.run_eval` from `backend/` any time; it costs nothing.
    `backend/tests/test_evaluation_accuracy.py` runs a subset of the same check
@@ -160,6 +168,9 @@ rule-based classifier (`backend/app/classifier/`).
    `run_eval.py` does, so run `run_eval.py` directly for the full picture.
 
 Full design: `docs/superpowers/specs/2026-09-15-job-tracker-phase-4b-local-classifier-design.md`
+(classification/extraction) and
+`docs/superpowers/specs/2026-09-16-job-tracker-phase-5-gmail-sync-design.md` (background
+sync).
 
 ## Database migrations
 
