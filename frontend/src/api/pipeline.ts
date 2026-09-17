@@ -1,12 +1,8 @@
 import { parseResponse } from './http'
 import type { Application } from '../types/application'
-import type { ProcessResult, ReviewDecision, ReviewItem } from '../types/pipeline'
+import type { ReviewDecision, ReviewItem } from '../types/pipeline'
 
 const BASE = '/api/v1/pipeline'
-
-export function processInbox(): Promise<ProcessResult> {
-  return fetch(`${BASE}/process`, { method: 'POST' }).then((r) => parseResponse<ProcessResult>(r))
-}
 
 export function getReviewQueue(): Promise<ReviewItem[]> {
   return fetch(`${BASE}/review`).then((r) => parseResponse<ReviewItem[]>(r))

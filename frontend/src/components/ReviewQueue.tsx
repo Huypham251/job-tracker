@@ -8,6 +8,7 @@ import { STATUS_LABELS } from '../constants'
 interface Props {
   applications: Application[]
   onApplicationsChanged: () => void
+  refreshSignal: number
 }
 
 interface EditState {
@@ -26,7 +27,7 @@ function emptyEdit(item: ReviewItem): EditState {
   }
 }
 
-export function ReviewQueue({ applications, onApplicationsChanged }: Props) {
+export function ReviewQueue({ applications, onApplicationsChanged, refreshSignal }: Props) {
   const [items, setItems] = useState<ReviewItem[]>([])
   const [error, setError] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -38,7 +39,7 @@ export function ReviewQueue({ applications, onApplicationsChanged }: Props) {
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load review queue'))
   }
 
-  useEffect(refresh, [])
+  useEffect(refresh, [refreshSignal])
 
   const startEditing = (item: ReviewItem) => {
     setEditingId(item.id)

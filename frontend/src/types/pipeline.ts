@@ -1,10 +1,3 @@
-export interface ProcessResult {
-  processed: number
-  auto_applied: number
-  queued_for_review: number
-  ignored: number
-}
-
 export interface ReviewItem {
   id: string
   subject: string
