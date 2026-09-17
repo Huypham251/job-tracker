@@ -14,6 +14,14 @@ from app.gmail.google_api import GoogleApiError
 from app.pipeline import service as pipeline_service
 from app.pipeline.models import ProcessedMessage
 from app.sync.models import SyncJob
+from app.users.models import User  # noqa: F401 — see test_sync_worker_entrypoint.py:
+# GmailConnection.owner and Application.owner both reference "User" as a string
+# relationship, resolved lazily by SQLAlchemy's class registry the first time any
+# mapper configures. Neither gmail/models.py nor applications/models.py imports
+# User at runtime (only under TYPE_CHECKING), so without this explicit import
+# here, a worker process started standalone (unlike the FastAPI app or the test
+# suite, both of which import app.users.models some other way first) crashes on
+# its first query with "expression 'User' failed to locate a name".
 
 logger = logging.getLogger(__name__)
 
