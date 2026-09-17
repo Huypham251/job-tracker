@@ -193,10 +193,14 @@ def run_forever(poll_interval: float = POLL_INTERVAL_SECONDS) -> None:
                 reap_stale_jobs(db)
             except Exception:
                 # A best-effort janitor must never block the primary work —
-                # log, roll back to a clean session, and still attempt
-                # claim_next_job below in this same tick.
-                logger.exception("Stale-job reaper failed; continuing")
+                # roll back to a clean session, then log, and still attempt
+                # claim_next_job below in this same tick. Rollback-before-log
+                # matches process_job's own handler above for the same
+                # reason: this message logs no ORM attributes today, but
+                # keeping the ordering uniform means it stays safe if one
+                # is ever added here.
                 db.rollback()
+                logger.exception("Stale-job reaper failed; continuing")
             job = claim_next_job(db)
             if job is not None:
                 process_job(db, job)
