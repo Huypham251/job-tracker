@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,7 +41,7 @@ class Settings(BaseSettings):
     # threshold has a wide safety margin over that, so a "running" job whose
     # updated_at hasn't moved in this long is treated as orphaned by a crash
     # (see worker.py's reap_stale_jobs), not as still legitimately working.
-    sync_stale_job_threshold_minutes: int = 15
+    sync_stale_job_threshold_minutes: int = Field(default=15, gt=0)
 
     @property
     def cors_origins_list(self) -> list[str]:

@@ -1,11 +1,12 @@
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, text
 from sqlalchemy.orm import Session
 
 from app.classifier.schemas import EmailExtraction
 from app.gmail import google_api
+from app.gmail import service as gmail_service
 from app.gmail.crypto import encrypt_token
 from app.gmail.models import GmailConnection
 from app.pipeline.models import ProcessedMessage
@@ -341,6 +342,52 @@ def test_process_job_fails_permanently_after_max_attempts(db_session, user, monk
     assert job.finished_at is not None
 
 
+def test_process_job_recovers_from_a_db_level_failure_without_raising(
+    db_session, user, monkeypatch
+) -> None:
+    # Simulates a genuine DB-level failure (poisons the session's transaction,
+    # like a real IntegrityError/OperationalError from a failed commit would)
+    # rather than a plain Python exception. This must happen at a point where
+    # job's ORM attributes are genuinely expired (SessionLocal defaults to
+    # expire_on_commit=True, and the prior page's `job.page_token = ...;
+    # db.commit()` just expired everything) and NOTHING has re-touched a job
+    # attribute since — i.e. the very first statement of a fresh page, before
+    # list_message_ids_page's page_token argument would otherwise force a
+    # refresh. get_valid_access_token failing on the second page is exactly
+    # that: nothing touches `job` between the first page's trailing commit
+    # and this call. If the exception handler accesses job.id/job.attempts
+    # before rolling back, that access needs a fresh SELECT (expired), which
+    # raises on a poisoned session — masking the original failure and leaving
+    # the job stuck "running" instead of being requeued.
+    connection = _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+
+    call_count = {"n": 0}
+
+    def fake_get_valid_access_token(db, conn):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return "token"
+        db.execute(text("SELECT 1/0"))  # a real Postgres error, not a Python one
+        return "unreachable"
+
+    monkeypatch.setattr(gmail_service, "get_valid_access_token", fake_get_valid_access_token)
+    monkeypatch.setattr(
+        google_api, "list_message_ids_page",
+        lambda token, *, query, page_token, max_results: ([], "page-2") if page_token is None else ([], None),
+    )
+
+    process_job(db_session, job, _FakeExtractor({}))
+
+    db_session.refresh(job)
+    assert call_count["n"] == 2  # confirms the second-page call path was exercised
+    assert job.status == "queued"
+    assert job.attempts == 1
+    assert job.next_attempt_at > datetime.now(timezone.utc)
+
+
 def test_process_job_retry_resumes_from_the_checkpointed_page_token(
     db_session, user, monkeypatch
 ) -> None:
@@ -502,6 +549,31 @@ def test_reap_stale_jobs_fails_permanently_after_max_attempts(db_session, user) 
     assert job.finished_at is not None
 
 
+class _StubSession:
+    """Stands in for SessionLocal() in run_forever tests — reap_stale_jobs and
+    claim_next_job are always monkeypatched in these tests and never touch the
+    session they're given, so this only needs to support close()/rollback().
+    Without this, run_forever's real SessionLocal() would bind to the dev
+    database URL (not the test DB) — harmless today since nothing calls it,
+    but a latent footgun if a future edit to run_forever ever did."""
+
+    def close(self) -> None:
+        pass
+
+    def rollback(self) -> None:
+        pass
+
+
+class _FakeTime:
+    """Stands in for the `time` module inside worker.py's run_forever, so
+    monkeypatching sleep() can't affect time.sleep anywhere else in the
+    process (patching the real `time` module globally would, even though
+    that's harmless under pytest's single-threaded execution)."""
+
+    def __init__(self, sleep) -> None:
+        self.sleep = sleep
+
+
 def test_run_forever_reaps_stale_jobs_every_iteration(monkeypatch) -> None:
     from app.sync import worker as worker_module
 
@@ -510,6 +582,7 @@ def test_run_forever_reaps_stale_jobs_every_iteration(monkeypatch) -> None:
 
     monkeypatch.setattr(worker_module, "reap_stale_jobs", lambda db: reap_calls.append(db))
     monkeypatch.setattr(worker_module, "claim_next_job", lambda db: claim_calls.append(db) or None)
+    monkeypatch.setattr(worker_module, "SessionLocal", _StubSession)
 
     class _StopLoop(Exception):
         pass
@@ -517,7 +590,7 @@ def test_run_forever_reaps_stale_jobs_every_iteration(monkeypatch) -> None:
     def fake_sleep(seconds):
         raise _StopLoop
 
-    monkeypatch.setattr(worker_module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(worker_module, "time", _FakeTime(fake_sleep))
 
     with pytest.raises(_StopLoop):
         worker_module.run_forever(poll_interval=0)
@@ -526,39 +599,32 @@ def test_run_forever_reaps_stale_jobs_every_iteration(monkeypatch) -> None:
     assert len(claim_calls) == 1
 
 
-def test_run_forever_survives_reap_stale_jobs_raising(monkeypatch) -> None:
+def test_run_forever_reap_failure_does_not_block_claim_next_job(monkeypatch) -> None:
+    # A best-effort janitor must never be able to block the primary work: if
+    # reap_stale_jobs raises, claim_next_job must still run in the SAME tick
+    # (not just "eventually, on some later tick") — otherwise a persistent
+    # reaper failure would silently stop all sync processing forever while
+    # the worker looks alive.
     from app.sync import worker as worker_module
 
-    reap_call_count = {"n": 0}
     claim_calls = []
 
     def fake_reap(db):
-        reap_call_count["n"] += 1
-        if reap_call_count["n"] == 1:
-            raise RuntimeError("db blip")
-        # Second call (the following loop iteration) succeeds — simulating a
-        # transient failure that clears, not a permanently broken worker.
+        raise RuntimeError("db blip")
 
     monkeypatch.setattr(worker_module, "reap_stale_jobs", fake_reap)
     monkeypatch.setattr(worker_module, "claim_next_job", lambda db: claim_calls.append(db) or None)
+    monkeypatch.setattr(worker_module, "SessionLocal", _StubSession)
 
     class _StopLoop(Exception):
         pass
 
-    calls = {"n": 0}
-
     def fake_sleep(seconds):
-        calls["n"] += 1
-        if calls["n"] >= 2:
-            raise _StopLoop
+        raise _StopLoop
 
-    monkeypatch.setattr(worker_module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(worker_module, "time", _FakeTime(fake_sleep))
 
     with pytest.raises(_StopLoop):
         worker_module.run_forever(poll_interval=0)
 
-    # Iteration 1: reap raises, the whole iteration is skipped (job stays
-    # None), the loop survives and sleeps. Iteration 2: reap succeeds and
-    # claim_next_job runs normally — the worker process is still alive.
-    assert reap_call_count["n"] == 2
     assert len(claim_calls) == 1

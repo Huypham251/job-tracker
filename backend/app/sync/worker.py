@@ -64,8 +64,14 @@ def reap_stale_jobs(db: Session) -> None:
     own exception handler already has; page_token is left untouched so a
     requeued job resumes from its last checkpoint."""
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=settings.sync_stale_job_threshold_minutes)
+    # skip_locked, matching claim_next_job's idiom, so this stays safe if a
+    # second worker process is ever introduced: a row genuinely still being
+    # written by a live process is held by that process's own transaction
+    # and gets skipped here rather than double-processed.
     stale_jobs = db.scalars(
-        select(SyncJob).where(SyncJob.status == "running", SyncJob.updated_at < cutoff)
+        select(SyncJob)
+        .where(SyncJob.status == "running", SyncJob.updated_at < cutoff)
+        .with_for_update(skip_locked=True)
     ).all()
     for job in stale_jobs:
         logger.warning("Reaping stale sync job %s (no progress since %s)", job.id, job.updated_at)
@@ -158,8 +164,15 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
             if next_page_token is None:
                 break
     except Exception as exc:
-        logger.exception("Sync job %s failed on attempt %s", job.id, job.attempts + 1)
+        # Roll back BEFORE touching `job` — if `exc` came from a failed DB
+        # statement, the session needs a rollback before it can run anything
+        # else, including the implicit SELECT that refreshing an expired ORM
+        # attribute (job.id, job.attempts — expire_on_commit=True) requires.
+        # Logging first would raise PendingRollbackError on exactly that class
+        # of failure, masking the original exception and leaving the job
+        # stuck "running" instead of being requeued.
         db.rollback()
+        logger.exception("Sync job %s failed on attempt %s", job.id, job.attempts + 1)
         _requeue_or_fail(job, _safe_error_message(exc))
         db.commit()
         return
@@ -176,7 +189,14 @@ def run_forever(poll_interval: float = POLL_INTERVAL_SECONDS) -> None:
         db = SessionLocal()
         job = None
         try:
-            reap_stale_jobs(db)
+            try:
+                reap_stale_jobs(db)
+            except Exception:
+                # A best-effort janitor must never block the primary work —
+                # log, roll back to a clean session, and still attempt
+                # claim_next_job below in this same tick.
+                logger.exception("Stale-job reaper failed; continuing")
+                db.rollback()
             job = claim_next_job(db)
             if job is not None:
                 process_job(db, job)
