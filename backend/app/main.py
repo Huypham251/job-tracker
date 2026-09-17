@@ -12,6 +12,9 @@ from app.gmail.google_api import GoogleApiError
 from app.gmail.router import router as gmail_router
 from app.pipeline.exceptions import ReviewItemNotFound
 from app.pipeline.router import router as pipeline_router
+from app.sync.exceptions import SyncAlreadyRunning, SyncJobNotFound
+from app.sync.router import router as sync_router
+from app.sync.schemas import SyncJobRead
 
 
 def create_app() -> FastAPI:
@@ -63,6 +66,17 @@ def create_app() -> FastAPI:
     ) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
+    @app.exception_handler(SyncAlreadyRunning)
+    async def handle_sync_already_running(request: Request, exc: SyncAlreadyRunning) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content=SyncJobRead.model_validate(exc.job).model_dump(mode="json"),
+        )
+
+    @app.exception_handler(SyncJobNotFound)
+    async def handle_sync_job_not_found(request: Request, exc: SyncJobNotFound) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -71,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(applications_router, prefix="/api/v1")
     app.include_router(gmail_router, prefix="/api/v1")
     app.include_router(pipeline_router, prefix="/api/v1")
+    app.include_router(sync_router, prefix="/api/v1")
 
     return app
 
