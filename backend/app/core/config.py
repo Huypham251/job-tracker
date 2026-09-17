@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     # decision made from the calibration data, not an oversight.
     classification_confidence_threshold: float = 0.85
     gmail_sync_backfill_days: int = 180
+    # Healthy process_job() commits at least once per message and once per
+    # page (worst-case gap between commits is one token-refresh call plus
+    # one list-page call, each bounded by google_api._TIMEOUT=10s) — this
+    # threshold has a wide safety margin over that, so a "running" job whose
+    # updated_at hasn't moved in this long is treated as orphaned by a crash
+    # (see worker.py's reap_stale_jobs), not as still legitimately working.
+    sync_stale_job_threshold_minutes: int = 15
 
     @property
     def cors_origins_list(self) -> list[str]:

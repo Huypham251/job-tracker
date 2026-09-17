@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
@@ -9,7 +10,7 @@ from app.gmail.crypto import encrypt_token
 from app.gmail.models import GmailConnection
 from app.pipeline.models import ProcessedMessage
 from app.sync.models import SyncJob
-from app.sync.worker import claim_next_job, process_job
+from app.sync.worker import _safe_error_message, claim_next_job, process_job, reap_stale_jobs
 from app.users.models import User
 
 
@@ -315,7 +316,8 @@ def test_process_job_fails_permanently_after_max_attempts_on_non_gmail_error(
 
     db_session.refresh(job)
     assert job.status == "failed"
-    assert job.error_message == "network died"
+    assert job.error_message == _safe_error_message(ConnectionError("network died"))
+    assert "network died" not in job.error_message
     assert job.finished_at is not None
 
 
@@ -334,7 +336,8 @@ def test_process_job_fails_permanently_after_max_attempts(db_session, user, monk
 
     db_session.refresh(job)
     assert job.status == "failed"
-    assert job.error_message == "still down"
+    assert job.error_message == _safe_error_message(google_api.GoogleApiError("still down"))
+    assert "still down" not in job.error_message
     assert job.finished_at is not None
 
 
@@ -412,3 +415,150 @@ def test_enqueue_sync_uses_the_watermark_set_by_a_prior_successful_job(
 
     assert next_job.job_type == "incremental"
     assert next_job.window_start == date(2026, 6, 14)  # 06-15 minus the 1-day margin
+
+
+def test_safe_error_message_returns_a_generic_gmail_message_for_google_api_error() -> None:
+    message = _safe_error_message(google_api.GoogleApiError("500 from Gmail"))
+
+    assert "Gmail" in message
+    assert "500 from Gmail" not in message
+
+
+def test_safe_error_message_returns_a_generic_message_for_unexpected_errors() -> None:
+    message = _safe_error_message(RuntimeError("SELECT * FROM gmail_connections WHERE token='abc123'"))
+
+    assert "unexpected error" in message
+    assert "abc123" not in message
+    assert "SELECT" not in message
+
+
+def _backdate_updated_at(db_session, job: SyncJob, when: datetime) -> None:
+    # Bypass the ORM's onupdate=clock_timestamp() entirely via a raw Core
+    # UPDATE, so the test setup is unambiguous rather than relying on
+    # SQLAlchemy's explicit-assignment-wins-over-onupdate behavior.
+    db_session.execute(
+        SyncJob.__table__.update().where(SyncJob.__table__.c.id == job.id).values(updated_at=when)
+    )
+    db_session.commit()
+    db_session.refresh(job)
+
+
+def test_reap_stale_jobs_requeues_a_stale_running_job(db_session, user) -> None:
+    job = _make_job(user.id, status="running", page_token="page-2")
+    db_session.add(job)
+    db_session.commit()
+    _backdate_updated_at(db_session, job, datetime.now(timezone.utc) - timedelta(minutes=30))
+
+    reap_stale_jobs(db_session)
+
+    db_session.refresh(job)
+    assert job.status == "queued"
+    assert job.attempts == 1
+    assert job.next_attempt_at > datetime.now(timezone.utc)
+    assert job.page_token == "page-2"  # checkpoint preserved
+
+
+def test_reap_stale_jobs_ignores_a_fresh_running_job(db_session, user) -> None:
+    job = _make_job(user.id, status="running")
+    db_session.add(job)
+    db_session.commit()
+    _backdate_updated_at(db_session, job, datetime.now(timezone.utc) - timedelta(minutes=1))
+
+    reap_stale_jobs(db_session)
+
+    db_session.refresh(job)
+    assert job.status == "running"
+    assert job.attempts == 0
+
+
+def test_reap_stale_jobs_ignores_non_running_statuses(db_session, user) -> None:
+    for status in ("queued", "completed", "failed"):
+        job = _make_job(user.id, status=status)
+        db_session.add(job)
+        db_session.commit()
+        _backdate_updated_at(db_session, job, datetime.now(timezone.utc) - timedelta(minutes=30))
+
+        reap_stale_jobs(db_session)
+
+        db_session.refresh(job)
+        assert job.status == status
+        assert job.attempts == 0
+        db_session.delete(job)
+        db_session.commit()
+
+
+def test_reap_stale_jobs_fails_permanently_after_max_attempts(db_session, user) -> None:
+    job = _make_job(user.id, status="running", attempts=2, max_attempts=3)
+    db_session.add(job)
+    db_session.commit()
+    _backdate_updated_at(db_session, job, datetime.now(timezone.utc) - timedelta(minutes=30))
+
+    reap_stale_jobs(db_session)
+
+    db_session.refresh(job)
+    assert job.status == "failed"
+    assert job.attempts == 3
+    assert job.error_message is not None
+    assert job.finished_at is not None
+
+
+def test_run_forever_reaps_stale_jobs_every_iteration(monkeypatch) -> None:
+    from app.sync import worker as worker_module
+
+    reap_calls = []
+    claim_calls = []
+
+    monkeypatch.setattr(worker_module, "reap_stale_jobs", lambda db: reap_calls.append(db))
+    monkeypatch.setattr(worker_module, "claim_next_job", lambda db: claim_calls.append(db) or None)
+
+    class _StopLoop(Exception):
+        pass
+
+    def fake_sleep(seconds):
+        raise _StopLoop
+
+    monkeypatch.setattr(worker_module.time, "sleep", fake_sleep)
+
+    with pytest.raises(_StopLoop):
+        worker_module.run_forever(poll_interval=0)
+
+    assert len(reap_calls) == 1
+    assert len(claim_calls) == 1
+
+
+def test_run_forever_survives_reap_stale_jobs_raising(monkeypatch) -> None:
+    from app.sync import worker as worker_module
+
+    reap_call_count = {"n": 0}
+    claim_calls = []
+
+    def fake_reap(db):
+        reap_call_count["n"] += 1
+        if reap_call_count["n"] == 1:
+            raise RuntimeError("db blip")
+        # Second call (the following loop iteration) succeeds — simulating a
+        # transient failure that clears, not a permanently broken worker.
+
+    monkeypatch.setattr(worker_module, "reap_stale_jobs", fake_reap)
+    monkeypatch.setattr(worker_module, "claim_next_job", lambda db: claim_calls.append(db) or None)
+
+    class _StopLoop(Exception):
+        pass
+
+    calls = {"n": 0}
+
+    def fake_sleep(seconds):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise _StopLoop
+
+    monkeypatch.setattr(worker_module.time, "sleep", fake_sleep)
+
+    with pytest.raises(_StopLoop):
+        worker_module.run_forever(poll_interval=0)
+
+    # Iteration 1: reap raises, the whole iteration is skipped (job stays
+    # None), the loop survives and sleeps. Iteration 2: reap succeeds and
+    # claim_next_job runs normally — the worker process is still alive.
+    assert reap_call_count["n"] == 2
+    assert len(claim_calls) == 1
