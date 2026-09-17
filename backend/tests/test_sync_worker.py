@@ -254,3 +254,64 @@ def test_process_job_fails_a_message_on_fetch_error_without_failing_the_job(
     assert job.status == "completed"
     assert job.failed_count == 1
     assert job.messages_processed == 1
+
+
+def test_process_job_requeues_with_backoff_on_transient_gmail_error(
+    db_session, user, monkeypatch
+) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+
+    def fake_list_page(token, **kw):
+        raise google_api.GoogleApiError("rate limited")
+
+    monkeypatch.setattr(google_api, "list_message_ids_page", fake_list_page)
+
+    process_job(db_session, job, _FakeExtractor({}))
+
+    db_session.refresh(job)
+    assert job.status == "queued"
+    assert job.attempts == 1
+    assert job.next_attempt_at > datetime.now(timezone.utc)
+
+
+def test_process_job_fails_permanently_after_max_attempts(db_session, user, monkeypatch) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id, attempts=2, max_attempts=3)
+    db_session.add(job)
+    db_session.commit()
+
+    monkeypatch.setattr(
+        google_api, "list_message_ids_page",
+        lambda token, **kw: (_ for _ in ()).throw(google_api.GoogleApiError("still down")),
+    )
+
+    process_job(db_session, job, _FakeExtractor({}))
+
+    db_session.refresh(job)
+    assert job.status == "failed"
+    assert job.error_message == "still down"
+    assert job.finished_at is not None
+
+
+def test_process_job_retry_resumes_from_the_checkpointed_page_token(
+    db_session, user, monkeypatch
+) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id, page_token="page-2")
+    db_session.add(job)
+    db_session.commit()
+
+    seen_page_tokens = []
+
+    def fake_list_page(token, *, query, page_token, max_results):
+        seen_page_tokens.append(page_token)
+        return ([], None)
+
+    monkeypatch.setattr(google_api, "list_message_ids_page", fake_list_page)
+
+    process_job(db_session, job, _FakeExtractor({}))
+
+    assert seen_page_tokens == ["page-2"]  # resumed, did not restart from None
