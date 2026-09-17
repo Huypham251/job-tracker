@@ -287,4 +287,4 @@ Manual CRUD (Phase 1), auth (Phase 2), the Gmail OAuth connect/disconnect flow a
 preserved verbatim, just called from `app/sync/worker.py` instead of from a
 request handler. `docs/superpowers/specs/2026-09-15-job-tracker-phase-4-pipeline-design.md`
 and `...-phase-4b-local-classifier-design.md` remain accurate for everything except
-§9's "Trigger mechanism" row (superseded by this document's §2).
+§2's "Trigger mechanism" row (superseded by this document's §2).

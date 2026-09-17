@@ -9,6 +9,13 @@ implementation uses a local, deterministic, rule-based classifier (`app/classifi
 not an LLM API. Every other section here (§4 data model, §6 matching, §7 trust model,
 §8 API contract, §9 frontend structure, §11-13 minus the LLM-specific rows) reflects
 what's actually running — read this doc for those, and the 4b doc for classification.
+**⚠️ Also superseded (2026-09-17):** §2's "Trigger mechanism" row (manual "Process
+Inbox" action) was replaced by `2026-09-16-job-tracker-phase-5-gmail-sync-design.md` —
+the shipped implementation is a Postgres-backed job queue and background worker, not a
+synchronous per-request fetch; `process_inbox` and its endpoint no longer exist. §8's
+API contract is accordingly out of date for the pipeline-trigger endpoint specifically
+(`POST /pipeline/process` is gone, replaced by `/gmail/sync*`) — read the Phase 5 doc
+for the current sync API; §8's `/pipeline/review*` rows are still accurate.
 **Scope:** Phase 4 only — turn fetched Gmail messages into structured job-application
 information, match them against existing applications, and create/update applications
 either automatically (high confidence) or via a human-reviewed queue (low confidence,
