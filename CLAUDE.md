@@ -6,7 +6,9 @@ under `docs/superpowers/plans/` remain the source of truth for what was decided 
 
 ## Status
 
-Phases 1–5 are complete, merged to `main`. Backend: 232/232 tests passing. Frontend:
+Phases 1–5 are complete, merged to `main`, and manually verified end-to-end against a
+real Gmail account (2026-09-17) — see "Manual testing findings" below. Backend: 233/233
+tests passing. Frontend:
 `tsc -b` clean, `oxlint` clean (0 errors, 3 pre-existing warnings in
 `AuthContext.tsx`/`useApplications.ts`, unrelated to any phase and not touched by any of
 them). Working tree clean, no uncommitted changes.
@@ -195,6 +197,57 @@ sourced (paginated, bounded, resumable instead of a flat top-20 fetch).
   (Noted here only so a search for it in old notes doesn't mislead — `ReviewQueue`'s
   `refreshSignal` prop, bumped by `ApplicationsPage` on sync completion/failure, closes
   it.)
+- **Sync duration is bounded by date window, not message count — confirmed real, not
+  just theoretical.** See "Manual testing findings" below: a real mailbox's initial sync
+  took 1h43m. Noted as a recommendation in Phase 5's final review, not fixed.
+
+## Manual testing findings (2026-09-17)
+
+Everything above was validated against a real Gmail account (~6,500 messages in the
+180-day window), not just the automated suite. Two setup/operational issues surfaced —
+neither is a design flaw, but a fresh session should know about them:
+
+- **The worker crashed on startup** the first time it was ever run standalone
+  (`python -m app.sync.worker`), with `sqlalchemy.exc.InvalidRequestError: ...
+  expression 'User' failed to locate a name`. `GmailConnection.owner` and
+  `Application.owner` reference `User` as a string relationship, resolved lazily by
+  SQLAlchemy's class registry the first time any mapper configures — which only works
+  if `app.users.models` was already imported by then. Neither `gmail/models.py` nor
+  `applications/models.py` imports it at runtime (only under `TYPE_CHECKING`), and
+  nothing else in the worker's import graph did either. This never surfaced via the
+  FastAPI app (`main.py` imports `auth_router`, which imports `app.users.models` early)
+  or via pytest (`conftest.py` explicitly imports every model module first) — the
+  worker run standalone is the one path that does neither, and it had simply never been
+  run standalone before this test session. **Fixed**: `worker.py` now explicitly
+  imports `app.users.models.User`. If a future refactor makes that import look
+  "unused" and removes it, this will silently come back — it's guarded by
+  `tests/test_sync_worker_entrypoint.py`, a subprocess-based regression test (a
+  genuinely fresh Python process is required to reproduce this; an in-process test
+  would be masked by whatever else already ran first in the same pytest session).
+- **The dev database's migrations were behind.** `alembic upgrade head` had never been
+  run locally after Phase 5's migration (`0006`, adding `sync_jobs`) merged, so the
+  worker failed with `UndefinedTable: relation "sync_jobs" does not exist` until it was
+  applied. Not a bug — just a reminder: **after pulling a phase that adds a migration,
+  run `cd backend && uv run alembic upgrade head` before starting the API or the
+  worker**, the API server can mask this longer than you'd expect since most of its
+  endpoints don't touch the new tables.
+
+What real-mailbox testing confirmed working, with concrete numbers: initial sync
+correctly paginated (6,533 messages seen, far past the old 20-message cap); incremental
+sync correctly bounded to the watermark window (52 seen, only 2 genuinely new, the rest
+correctly recognized as already-processed); zero duplicate `gmail_message_id` rows
+anywhere across ~6,560 total messages seen; 37 individual per-message fetch failures
+were logged and skipped without failing the job; review-queue approve/reject and the
+post-sync auto-refresh (applications list + review queue, no page reload) both worked.
+
+**Also observed, Phase 4b (classifier) territory, not Phase 5 — flagged, not fixed**: on
+this real mailbox, confidence scores were uniformly lower than on the curated
+evaluation dataset (avg ~0.36 for review-queued items; none crossed the 0.85 auto-apply
+bar), and some company-name extraction picked up greeting text (e.g. "Anduril Hi Gia
+Huy" instead of "Anduril"). Every affected message still correctly routed to manual
+review rather than auto-applying something wrong — the trust-model gate did its job —
+but it's real signal that `classifier/patterns.py`'s constants could use a re-tuning
+pass against real-world mail, not just the evaluation dataset, whenever that's prioritized.
 
 ## Local dev environment (this machine)
 
@@ -211,6 +264,11 @@ a `SyncJob` row — without the worker running, it stays `queued` forever (the f
 will show "Syncing…" indefinitely, indistinguishable from a slow real sync unless you
 check that the worker process is actually up).
 
+**Before starting any of these for the first time after pulling new changes**, run
+`cd backend && uv run alembic upgrade head` — see "Manual testing findings" above for
+what happens if you skip this (the worker fails opaquely; the API server can mask it
+longer since most endpoints don't touch the newer tables).
+
 ## Testing conventions
 
 Backend: `cd backend && uv run pytest`. Frontend: `cd frontend && npx tsc -b && npx
@@ -219,8 +277,8 @@ module — no test makes a real network call. `evaluation/run_eval.py` is *not* 
 the pytest suite (it's a standalone reporting script); `tests/test_evaluation_accuracy.py`
 is the automated subset of it.
 
-Two non-obvious test techniques introduced in Phase 5, in `backend/tests/test_sync_worker.py`,
-worth knowing about before extending that file:
+Three non-obvious test techniques introduced in Phase 5, in `backend/tests/test_sync_worker.py`
+(the third in its own file), worth knowing about before extending either:
 - **Real cross-connection locking tests** (`test_claim_next_job_skips_a_row_locked_by_another_connection`)
   bypass the standard `db_session` fixture entirely — it wraps every test in one
   uncommitted outer transaction, which a second real connection could never see. These
@@ -237,3 +295,10 @@ worth knowing about before extending that file:
   `PendingRollbackError` on a poisoned session and masking the original failure) was
   caught during Phase 5 review after an earlier, naive version of this test passed
   without proving anything.
+- **Subprocess-based standalone-import test**
+  (`test_worker_module_can_configure_orm_mappers_standalone`, in the separate file
+  `tests/test_sync_worker_entrypoint.py`) runs `python -c "import app.sync.worker; ...
+  configure_mappers()"` in a genuinely fresh process rather than importing in-process —
+  needed because `conftest.py` explicitly pre-imports every model module for the whole
+  suite, which would silently mask the exact import-ordering bug this test exists to
+  catch (see "Manual testing findings" above).
