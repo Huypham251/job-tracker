@@ -277,6 +277,48 @@ def test_process_job_requeues_with_backoff_on_transient_gmail_error(
     assert job.next_attempt_at > datetime.now(timezone.utc)
 
 
+def test_process_job_requeues_with_backoff_on_unexpected_non_gmail_error(
+    db_session, user, monkeypatch
+) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+
+    def fake_list_page(token, **kw):
+        raise RuntimeError("unexpected boom")
+
+    monkeypatch.setattr(google_api, "list_message_ids_page", fake_list_page)
+
+    process_job(db_session, job, _FakeExtractor({}))
+
+    db_session.refresh(job)
+    assert job.status == "queued"
+    assert job.attempts == 1
+    assert job.next_attempt_at > datetime.now(timezone.utc)
+
+
+def test_process_job_fails_permanently_after_max_attempts_on_non_gmail_error(
+    db_session, user, monkeypatch
+) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id, attempts=2, max_attempts=3)
+    db_session.add(job)
+    db_session.commit()
+
+    monkeypatch.setattr(
+        google_api, "list_message_ids_page",
+        lambda token, **kw: (_ for _ in ()).throw(ConnectionError("network died")),
+    )
+
+    process_job(db_session, job, _FakeExtractor({}))
+
+    db_session.refresh(job)
+    assert job.status == "failed"
+    assert job.error_message == "network died"
+    assert job.finished_at is not None
+
+
 def test_process_job_fails_permanently_after_max_attempts(db_session, user, monkeypatch) -> None:
     _connect_gmail(db_session, user)
     job = _make_job(user.id, attempts=2, max_attempts=3)

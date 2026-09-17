@@ -45,7 +45,6 @@ def claim_next_job(db: Session) -> SyncJob | None:
 
 
 def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -> None:
-    # The watermark update (Task 9) is not part of this implementation yet.
     extractor = extractor or RuleBasedExtractor()
     connection = gmail_service.get_connection(db, job.user_id)
     if connection is None:
@@ -58,22 +57,26 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
     query = f"after:{job.window_start.strftime('%Y/%m/%d')}"
 
     try:
-        access_token = gmail_service.get_valid_access_token(db, connection)
-
         while True:
+            access_token = gmail_service.get_valid_access_token(db, connection)
+
             message_ids, next_page_token = google_api.list_message_ids_page(
                 access_token, query=query, page_token=job.page_token, max_results=PAGE_SIZE
             )
             job.messages_seen += len(message_ids)
+            db.commit()
+
+            already_processed_ids = set(
+                db.scalars(
+                    select(ProcessedMessage.gmail_message_id).where(
+                        ProcessedMessage.user_id == job.user_id,
+                        ProcessedMessage.gmail_message_id.in_(message_ids),
+                    )
+                ).all()
+            )
 
             for message_id in message_ids:
-                already_processed = db.scalars(
-                    select(ProcessedMessage.id).where(
-                        ProcessedMessage.user_id == job.user_id,
-                        ProcessedMessage.gmail_message_id == message_id,
-                    )
-                ).one_or_none()
-                if already_processed is not None:
+                if message_id in already_processed_ids:
                     continue
 
                 try:
@@ -106,7 +109,8 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
 
             if next_page_token is None:
                 break
-    except GoogleApiError as exc:
+    except Exception as exc:
+        db.rollback()
         job.attempts += 1
         if job.attempts < job.max_attempts:
             job.status = "queued"
@@ -130,10 +134,14 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
 def run_forever(poll_interval: float = POLL_INTERVAL_SECONDS) -> None:
     while True:
         db = SessionLocal()
+        job = None
         try:
             job = claim_next_job(db)
             if job is not None:
                 process_job(db, job)
+        except Exception:
+            logger.exception("Unhandled error in sync worker loop")
+            db.rollback()
         finally:
             db.close()
         if job is None:
