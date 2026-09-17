@@ -1,32 +1,10 @@
-from datetime import datetime, timedelta, timezone
-
 import pytest
 from fastapi.testclient import TestClient
 
 from app.applications.models import Application, ApplicationStatus
-from app.gmail import google_api
-from app.gmail.crypto import encrypt_token
-from app.gmail.models import GmailConnection
-from app.classifier import extractor as classifier_extractor
-from app.classifier.schemas import EmailExtraction
 from app.pipeline.models import ProcessedMessage
 
 BASE = "/api/v1/pipeline"
-
-
-@pytest.fixture
-def connected_gmail(db_session, user) -> GmailConnection:
-    connection = GmailConnection(
-        user_id=user.id,
-        google_email="alice@gmail.com",
-        access_token_encrypted=encrypt_token("access"),
-        refresh_token_encrypted=encrypt_token("refresh"),
-        token_expiry=datetime.now(timezone.utc) + timedelta(hours=1),
-        scope="https://www.googleapis.com/auth/gmail.readonly",
-    )
-    db_session.add(connection)
-    db_session.commit()
-    return connection
 
 
 @pytest.fixture
@@ -55,7 +33,6 @@ def pending_item(db_session, user) -> ProcessedMessage:
 @pytest.mark.parametrize(
     "method,path",
     [
-        ("post", "/process"),
         ("get", "/review"),
         ("post", "/review/00000000-0000-0000-0000-000000000000/approve"),
         ("post", "/review/00000000-0000-0000-0000-000000000000/reject"),
@@ -64,36 +41,6 @@ def pending_item(db_session, user) -> ProcessedMessage:
 def test_pipeline_endpoints_require_authentication(client: TestClient, method, path) -> None:
     response = getattr(client, method)(f"{BASE}{path}")
     assert response.status_code == 401
-
-
-def test_process_endpoint_returns_summary(
-    auth_client: TestClient, connected_gmail, monkeypatch
-) -> None:
-    monkeypatch.setattr(google_api, "list_message_ids", lambda token, limit: ["m1"])
-    monkeypatch.setattr(
-        google_api,
-        "get_message_summary",
-        lambda token, mid: {"id": mid, "subject": "App received", "from_": "jobs@acme.com", "date": "d", "snippet": "s"},
-    )
-    monkeypatch.setattr(google_api, "get_message_body", lambda token, mid: "body")
-    monkeypatch.setattr(
-        classifier_extractor.RuleBasedExtractor,
-        "classify_and_extract",
-        lambda self, **kwargs: EmailExtraction(
-            is_job_related=True, confidence=0.95, company="Acme", position="SWE", status="applied"
-        ),
-    )
-
-    response = auth_client.post(f"{BASE}/process")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body == {"processed": 1, "auto_applied": 1, "queued_for_review": 0, "ignored": 0}
-
-
-def test_process_endpoint_requires_gmail_connection(auth_client: TestClient) -> None:
-    response = auth_client.post(f"{BASE}/process")
-    assert response.status_code == 404
 
 
 def test_review_list_returns_pending_items(auth_client: TestClient, pending_item) -> None:

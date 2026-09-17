@@ -7,100 +7,16 @@ from sqlalchemy.orm import Session
 
 from app.applications.models import Application, ApplicationStatus
 from app.core.config import settings
-from app.gmail import google_api
-from app.gmail import service as gmail_service
-from app.gmail.exceptions import GmailNotConnected
 from app.classifier.extractor import ClassificationError, Extractor
 from app.classifier.schemas import EmailExtraction
 from app.pipeline import matching
 from app.pipeline.exceptions import ReviewItemNotFound
 from app.pipeline.models import ProcessedMessage
-from app.pipeline.schemas import ProcessResult, ReviewDecision
+from app.pipeline.schemas import ReviewDecision
 
 logger = logging.getLogger(__name__)
 
 _MORE_SPECIFIC_STATUSES = {"applied", "oa", "interview", "rejected", "offer"}
-
-
-def process_inbox(db: Session, user_id: UUID, extractor: Extractor) -> ProcessResult:
-    connection = gmail_service.get_connection(db, user_id)
-    if connection is None:
-        raise GmailNotConnected(user_id)
-
-    access_token = gmail_service.get_valid_access_token(db, connection)
-    message_ids = google_api.list_message_ids(access_token, limit=settings.pipeline_batch_limit)
-
-    already_processed = set(
-        db.scalars(
-            select(ProcessedMessage.gmail_message_id).where(
-                ProcessedMessage.user_id == user_id,
-                ProcessedMessage.gmail_message_id.in_(message_ids),
-            )
-        )
-    )
-    new_message_ids = [mid for mid in message_ids if mid not in already_processed]
-
-    auto_applied = 0
-    queued_for_review = 0
-    ignored = 0
-
-    for message_id in new_message_ids:
-        try:
-            summary = google_api.get_message_summary(access_token, message_id)
-            body = google_api.get_message_body(access_token, message_id)
-            extraction = extractor.classify_and_extract(
-                subject=summary["subject"],
-                sender=summary["from_"],
-                date=summary["date"],
-                body=body,
-            )
-        except (google_api.GoogleApiError, ClassificationError):
-            logger.warning("Skipping message %s: fetch or extraction failed", message_id)
-            continue
-
-        review_status, matched_application_id, proposed_action = _apply_decision(
-            db, user_id, extraction
-        )
-
-        try:
-            db.add(
-                ProcessedMessage(
-                    user_id=user_id,
-                    gmail_message_id=message_id,
-                    subject=summary["subject"],
-                    sender=summary["from_"],
-                    message_date=summary["date"],
-                    snippet=summary["snippet"],
-                    is_job_related=extraction.is_job_related,
-                    confidence=extraction.confidence,
-                    extracted_company=extraction.company,
-                    extracted_position=extraction.position,
-                    extracted_status=extraction.status,
-                    extracted_status_date=extraction.status_date,
-                    matched_application_id=matched_application_id,
-                    proposed_action=proposed_action,
-                    review_status=review_status,
-                )
-            )
-            db.commit()
-        except SQLAlchemyError:
-            db.rollback()
-            logger.warning("Skipping message %s: failed to persist", message_id)
-            continue
-
-        if review_status == "auto_applied":
-            auto_applied += 1
-        elif review_status == "pending_review":
-            queued_for_review += 1
-        else:
-            ignored += 1
-
-    return ProcessResult(
-        processed=len(new_message_ids),
-        auto_applied=auto_applied,
-        queued_for_review=queued_for_review,
-        ignored=ignored,
-    )
 
 
 def process_message(

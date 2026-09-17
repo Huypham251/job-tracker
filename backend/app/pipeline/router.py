@@ -6,19 +6,11 @@ from sqlalchemy.orm import Session
 from app.applications.schemas import ApplicationRead
 from app.auth.dependencies import get_current_user
 from app.db.session import get_db
-from app.classifier.extractor import RuleBasedExtractor
 from app.pipeline import service
-from app.pipeline.schemas import ProcessResult, ReviewDecision, ReviewItem
+from app.pipeline.schemas import ReviewDecision, ReviewItem
 from app.users.models import User
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
-
-
-@router.post("/process", response_model=ProcessResult)
-def pipeline_process(
-    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
-) -> ProcessResult:
-    return service.process_inbox(db, current_user.id, RuleBasedExtractor())
 
 
 @router.get("/review", response_model=list[ReviewItem])
