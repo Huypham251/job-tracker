@@ -315,3 +315,58 @@ def test_process_job_retry_resumes_from_the_checkpointed_page_token(
     process_job(db_session, job, _FakeExtractor({}))
 
     assert seen_page_tokens == ["page-2"]  # resumed, did not restart from None
+
+
+def test_process_job_sets_the_connection_watermark_on_success(db_session, user, monkeypatch) -> None:
+    connection = _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    job.started_at = datetime(2026, 6, 15, tzinfo=timezone.utc)
+    db_session.add(job)
+    db_session.commit()
+
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: ([], None))
+
+    process_job(db_session, job, _FakeExtractor({}))
+
+    db_session.refresh(connection)
+    assert connection.last_synced_message_date == date(2026, 6, 15)
+
+
+def test_process_job_does_not_advance_the_watermark_on_failure(db_session, user, monkeypatch) -> None:
+    connection = _connect_gmail(db_session, user)
+    job = _make_job(user.id, attempts=2, max_attempts=3)
+    db_session.add(job)
+    db_session.commit()
+
+    monkeypatch.setattr(
+        google_api, "list_message_ids_page",
+        lambda token, **kw: (_ for _ in ()).throw(google_api.GoogleApiError("down")),
+    )
+
+    process_job(db_session, job, _FakeExtractor({}))
+
+    db_session.refresh(connection)
+    assert connection.last_synced_message_date is None
+
+
+def test_enqueue_sync_uses_the_watermark_set_by_a_prior_successful_job(
+    db_session, user, monkeypatch
+) -> None:
+    from app.sync import service as sync_service
+
+    connection = _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+    # process_job sets started_at itself only via claim_next_job; set it directly
+    # here since this test drives process_job without going through claim_next_job.
+    job.started_at = datetime(2026, 6, 15, tzinfo=timezone.utc)
+    db_session.commit()
+
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: ([], None))
+    process_job(db_session, job, _FakeExtractor({}))
+
+    next_job = sync_service.enqueue_sync(db_session, user.id)
+
+    assert next_job.job_type == "incremental"
+    assert next_job.window_start == date(2026, 6, 14)  # 06-15 minus the 1-day margin

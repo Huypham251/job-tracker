@@ -122,6 +122,8 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
 
     job.status = "completed"
     job.finished_at = datetime.now(timezone.utc)
+    if job.started_at is not None:
+        connection.last_synced_message_date = job.started_at.astimezone(timezone.utc).date()
     db.commit()
 
 
