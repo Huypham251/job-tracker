@@ -103,6 +103,58 @@ def process_inbox(db: Session, user_id: UUID, extractor: Extractor) -> ProcessRe
     )
 
 
+def process_message(
+    db: Session,
+    user_id: UUID,
+    extractor: Extractor,
+    *,
+    sync_job_id: UUID | None,
+    message_id: str,
+    summary: dict,
+    body: str,
+) -> str | None:
+    try:
+        extraction = extractor.classify_and_extract(
+            subject=summary["subject"], sender=summary["from_"], date=summary["date"], body=body
+        )
+    except ClassificationError:
+        logger.warning("Skipping message %s: extraction failed", message_id)
+        return None
+
+    review_status, matched_application_id, proposed_action = _apply_decision(
+        db, user_id, extraction
+    )
+
+    try:
+        db.add(
+            ProcessedMessage(
+                user_id=user_id,
+                sync_job_id=sync_job_id,
+                gmail_message_id=message_id,
+                subject=summary["subject"],
+                sender=summary["from_"],
+                message_date=summary["date"],
+                snippet=summary["snippet"],
+                is_job_related=extraction.is_job_related,
+                confidence=extraction.confidence,
+                extracted_company=extraction.company,
+                extracted_position=extraction.position,
+                extracted_status=extraction.status,
+                extracted_status_date=extraction.status_date,
+                matched_application_id=matched_application_id,
+                proposed_action=proposed_action,
+                review_status=review_status,
+            )
+        )
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        logger.warning("Skipping message %s: failed to persist", message_id)
+        return None
+
+    return review_status
+
+
 def _apply_decision(
     db: Session, user_id: UUID, extraction: EmailExtraction
 ) -> tuple[str, UUID | None, str | None]:
