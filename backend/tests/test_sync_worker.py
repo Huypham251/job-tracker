@@ -76,26 +76,32 @@ def test_claim_next_job_skips_a_row_locked_by_another_connection(engine) -> None
             .returning(SyncJob.__table__.c.id)
         ).scalar_one()
 
-    conn_a = engine.connect()
-    txn_a = conn_a.begin()
-    session_a = Session(bind=conn_a)
     try:
-        session_a.execute(
-            SyncJob.__table__.select().where(SyncJob.__table__.c.id == job_id).with_for_update()
-        ).one()
-
-        conn_b = engine.connect()
-        session_b = Session(bind=conn_b)
+        conn_a = engine.connect()
+        txn_a = conn_a.begin()
+        session_a = Session(bind=conn_a)
         try:
-            assert claim_next_job(session_b) is None
-        finally:
-            session_b.close()
-            conn_b.close()
-    finally:
-        session_a.close()
-        txn_a.rollback()
-        conn_a.close()
+            session_a.execute(
+                SyncJob.__table__.select()
+                .where(SyncJob.__table__.c.id == job_id)
+                .with_for_update()
+            ).one()
 
-    with engine.begin() as cleanup_conn:
-        cleanup_conn.execute(delete(SyncJob).where(SyncJob.id == job_id))
-        cleanup_conn.execute(delete(User).where(User.id == user_id))
+            conn_b = engine.connect()
+            session_b = Session(bind=conn_b)
+            try:
+                assert claim_next_job(session_b) is None
+            finally:
+                session_b.close()
+                conn_b.close()
+        finally:
+            session_a.close()
+            txn_a.rollback()
+            conn_a.close()
+    finally:
+        # Guaranteed to run even if the assertion (or anything else above)
+        # raises, so a failing test never leaks committed rows into the
+        # shared, session-scoped test database.
+        with engine.begin() as cleanup_conn:
+            cleanup_conn.execute(delete(SyncJob).where(SyncJob.id == job_id))
+            cleanup_conn.execute(delete(User).where(User.id == user_id))
