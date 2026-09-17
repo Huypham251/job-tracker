@@ -4,13 +4,6 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 
-class ProcessResult(BaseModel):
-    processed: int
-    auto_applied: int
-    queued_for_review: int
-    ignored: int
-
-
 class ReviewItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

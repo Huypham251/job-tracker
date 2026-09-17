@@ -33,7 +33,6 @@ class Settings(BaseSettings):
     # value here (unchanged from its prior, un-evidenced default) is itself a
     # decision made from the calibration data, not an oversight.
     classification_confidence_threshold: float = 0.85
-    pipeline_batch_limit: int = 20
     gmail_sync_backfill_days: int = 180
 
     @property
