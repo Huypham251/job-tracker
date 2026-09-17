@@ -29,7 +29,7 @@ export function SyncPanel({ onSyncCompleted }: Props) {
           setJob(updated)
           if (updated.status === 'completed' || updated.status === 'failed') {
             stopPolling()
-            if (updated.status === 'completed') onSyncCompleted()
+            onSyncCompleted()
           }
         })
         .catch((err) => {
