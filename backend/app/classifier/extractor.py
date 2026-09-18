@@ -16,6 +16,7 @@ from app.classifier.patterns import (
     NEGATIVE_PATTERNS,
     STATUS_PATTERNS,
 )
+from app.classifier.preprocess import preprocess_body
 from app.classifier.schemas import EmailExtraction
 from app.classifier.text import combine_subject_body, extract_sender_domain, normalize_text, parse_email_date
 
@@ -77,6 +78,7 @@ class RuleBasedExtractor:
     def classify_and_extract(
         self, *, subject: str, sender: str, date: str, body: str
     ) -> EmailExtraction:
+        body = preprocess_body(body)
         text = normalize_text(subject, body)
         sender_domain = extract_sender_domain(sender)
         status_scores, job_signal, negative_signal = classify(text, sender_domain)
