@@ -9,6 +9,8 @@ STATUS_PATTERNS: dict[str, list[tuple[str, int]]] = {
         # and often landing below JOB_RELATED_THRESHOLD.
         (r"(?:we|i)(?:'ve| have)? received your application", 3),
         (r"successfully applied", 2),
+        (r"application is (?:now )?(?:in our system|being reviewed)", 3),
+        (r"(?:we|i)(?:'ve| have)? got your application", 2),
     ],
     "oa": [
         (r"online assessment", 3),
@@ -16,6 +18,7 @@ STATUS_PATTERNS: dict[str, list[tuple[str, int]]] = {
         (r"hackerrank|codesignal", 3),
         (r"take.?home (?:assignment|test|challenge)", 2),
         (r"technical assessment", 2),
+        (r"skills assessment", 3),
     ],
     "interview": [
         (r"invite you to interview", 3),
@@ -23,6 +26,8 @@ STATUS_PATTERNS: dict[str, list[tuple[str, int]]] = {
         (r"phone screen", 3),
         (r"interview (?:invitation|process)", 2),
         (r"\binterview\b", 1),
+        (r"set up a time to (?:chat|talk)", 2),
+        (r"available for a (?:chat|call) about", 2),
     ],
     "rejected": [
         (r"regret to inform", 3),
@@ -30,12 +35,15 @@ STATUS_PATTERNS: dict[str, list[tuple[str, int]]] = {
         (r"decided (?:not )?to (?:proceed|move forward) with other candidates", 3),
         (r"other candidates", 2),
         (r"unfortunately", 2),
+        (r"won'?t be moving forward", 3),
+        (r"move(?:d|ing)? in a different direction", 3),
     ],
     "offer": [
         (r"pleased to offer", 3),
         (r"offer of employment", 3),
-        (r"extend(?:ing)? an offer", 3),
+        (r"extend(?:ing)? (?:you )?an offer", 3),
         (r"job offer", 2),
+        (r"(?:thrilled|excited) to (?:offer|welcome you|bring you on board)", 3),
     ],
 }
 
@@ -45,6 +53,8 @@ GENERIC_JOB_PATTERNS: list[tuple[str, int]] = [
     (r"\bcandidates?\b", 1),
     (r"recruiting team", 1),
     (r"talent (?:acquisition|team)", 1),
+    (r"\bopening\b", 3),
+    (r"\bopportunity\b", 3),
 ]
 
 NEGATIVE_PATTERNS: list[tuple[str, int]] = [
