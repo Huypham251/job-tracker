@@ -90,8 +90,18 @@ ATS_DOMAINS: frozenset[str] = frozenset(
 )
 
 JOB_RELATED_THRESHOLD = 3
-JOB_SIGNAL_NORM = 6.0
-MARGIN_NORM = 4.0
+# Lowered from 6.0/4.0 (Phase 4b) in Phase 6 Task 10: those values were calibrated
+# against evaluation/dataset.jsonl's original 18 template-phrased examples, where a
+# genuinely job-related message routinely hits several weighted patterns at once. Real
+# mail (per Phase 5's manual test — see CLAUDE.md) usually hits exactly one 3-weight
+# status pattern and nothing else, giving net_signal=3, under the old norm that's
+# base=3/6*0.6=0.3, capped well below where a human would call the signal "clear."
+# 4.5/3.0 let a single strong, unambiguous status match reach base=0.4 and a clean
+# top-vs-runner-up margin still saturate at 0.3 — see evaluation/inspect_confidence.py's
+# output and evaluation/compare.py's precision_at_threshold before/after for the
+# evidence this was checked against, not guessed.
+JOB_SIGNAL_NORM = 4.5
+MARGIN_NORM = 3.0
 DOMAIN_CONFIDENCE_BONUS = 0.1
 DOMAIN_RELATEDNESS_BONUS = 2
 

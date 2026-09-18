@@ -37,9 +37,9 @@ def test_classify_and_extract_applied_email_with_company_but_no_position() -> No
     assert result.status == "applied"
     assert result.company == "Acme Corp"
     assert result.position is None
-    # base=0.3 (net_signal=3, capped at 3/6*0.6) + margin=0.225 (3/4*0.3) + domain=0.0
-    # - penalty=0.35 (position tier "none") = 0.175
-    assert result.confidence == pytest.approx(0.175)
+    # base=0.4 (net_signal=3, min(3/4.5,1)*0.6) + margin=0.3 (min(3/3.0,1)*0.3, capped)
+    # + domain=0.0 - penalty=0.35 (position tier "none") = 0.35
+    assert result.confidence == pytest.approx(0.35)
     assert result.status_date == date(2026, 1, 5)
 
 
@@ -75,17 +75,18 @@ def test_classify_and_extract_ats_domain_blocked_from_company_but_boosts_confide
     # With status_scores == {"applied": 3, "oa": 0, "interview": 0,
     # "rejected": 0, "offer": 0}, top_score = 3 > 0, so status = "applied",
     # and margin = min((3 - 0) / 4, 1) * 0.3 = 0.225.
-    # base = min(max(8, 0) / 6, 1.0) * 0.6 = min(1.333, 1.0) * 0.6 = 0.6
-    # margin = 0.225
+    # base = min(max(8, 0) / 4.5, 1.0) * 0.6 = min(1.778, 1.0) * 0.6 = 0.6 (still capped)
+    # margin = min(3 / 3.0, 1.0) * 0.3 = 0.3 (now also capped, was 0.225 under the old
+    #   MARGIN_NORM=4.0 — Task 10 lowered it to 3.0)
     # domain_bonus = 0.1 (sender domain greenhouse.io is in ATS_DOMAINS)
     # penalty = max(EXTRACTION_PENALTY["none"], EXTRACTION_PENALTY["template"])
     #         = max(0.35, 0.0) = 0.35 (company tier "none"; position tier
     #           "template" via find_position's "for the ... position" match)
-    # confidence = 0.6 + 0.225 + 0.1 - 0.35 = 0.575
+    # confidence = 0.6 + 0.3 + 0.1 - 0.35 = 0.65
     assert result.status == "applied"
     assert result.company is None  # greenhouse.io is blocklisted; no display name to fall back to
     assert result.position == "Backend Engineer"
-    assert result.confidence == pytest.approx(0.575)
+    assert result.confidence == pytest.approx(0.65)
 
 
 def test_classify_and_extract_high_confidence_interview_with_both_fields() -> None:
