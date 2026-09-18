@@ -31,3 +31,17 @@ def test_normalizes_smart_quotes_and_dashes() -> None:
 def test_leaves_ordinary_content_untouched() -> None:
     body = "We have received your application for the Software Engineer position and will be in touch."
     assert preprocess_body(body) == body
+
+
+def test_does_not_strip_a_real_sentence_that_merely_starts_with_a_greeting_word() -> None:
+    body = "Dear applicant, your application has been rejected."
+    assert preprocess_body(body) == body
+
+
+def test_does_not_truncate_when_a_signoff_word_opens_the_body() -> None:
+    body = (
+        "Congratulations,\n\n"
+        "We are pleased to offer you the Software Engineer position at Acme Corp."
+    )
+    result = preprocess_body(body)
+    assert "We are pleased to offer you the Software Engineer position at Acme Corp." in result

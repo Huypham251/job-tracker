@@ -1,12 +1,13 @@
 import re
 
 # A line that is ONLY a greeting (optionally with a short name/title after it) — not a
-# sentence that merely starts with one of these words. Requires the line to end (after
-# optional trailing [,:] and whitespace) within 60 chars of the greeting word, so a real
-# sentence like "Hi-tech companies are hiring fast." (ends in a period, more than a
-# trailing comma/colon) is correctly left alone.
+# sentence that merely starts with one of these words. Requires the line to end in a
+# literal comma or colon (mandatory, not optional) within 60 chars of the greeting
+# word, so a real sentence like "Hi-tech companies are hiring fast." (ends in a
+# period, not a comma/colon) or "Dear applicant, your application has been rejected."
+# (a comma appears mid-line, not at the end) is correctly left alone.
 _GREETING_LINE_RE = re.compile(
-    r"^[ \t]*(?:hi|hello|hey|dear|greetings)\b[^\n]{0,60}[,:]?[ \t]*$",
+    r"^[ \t]*(?:hi|hello|hey|dear|greetings)\b[^\n]{0,60}[,:][ \t]*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -38,7 +39,16 @@ def _strip_greeting_lines(body: str) -> str:
 
 def _truncate_at_signature(body: str) -> str:
     match = _SIGNATURE_START_RE.search(body)
-    return body[: match.start()] if match else body
+    if match is None:
+        return body
+    preceding = body[: match.start()].strip()
+    if not preceding:
+        # A sign-off word/phrase as the very first line (e.g. a body that opens with
+        # "Congratulations,") is not a footer — a real signature/footer always comes
+        # after actual message content. Without this guard, a message like that would
+        # be truncated to nothing.
+        return body
+    return body[: match.start()]
 
 
 def _normalize_punctuation(body: str) -> str:
