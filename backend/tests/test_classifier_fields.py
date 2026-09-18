@@ -166,3 +166,17 @@ def test_find_company_does_not_treat_non_ats_assessment_platform_as_the_company(
     company, tier = find_company("no template match here", "noreply@testgorilla.com")
     assert company is None
     assert tier == "none"
+
+
+def test_find_position_matches_as_our_new_template() -> None:
+    text = "Outpost Aerospace is thrilled to bring you on board as our new Systems Engineer."
+    position, tier = find_position(text, "hr@outpostaerospace.com")
+    assert position == "Systems Engineer"
+    assert tier == "template"
+
+
+def test_find_position_matches_as_your_new_template() -> None:
+    text = "We're excited to welcome you as your new Machine Learning Engineer."
+    position, tier = find_position(text, "hr@meridianlabs.ai")
+    assert position == "Machine Learning Engineer"
+    assert tier == "template"

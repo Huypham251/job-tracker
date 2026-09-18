@@ -70,6 +70,13 @@ _POSITION_ROLE_RE = re.compile(
     rf"for the (?P<position>{_POSITION_TOKEN}) (?:position|role)\b",
     re.IGNORECASE,
 )
+# "X is thrilled to bring you on board as our new Y" / "as your new Y" — no
+# position/role/opening/opportunity keyword present, so neither existing template
+# fires; "as (our|your) new" is the only extractable signal.
+_POSITION_AS_NEW_RE = re.compile(
+    rf"as (?:our|your) new (?P<position>{_POSITION_TOKEN})\b",
+    re.IGNORECASE,
+)
 # Handles a company stated as the sentence's subject rather than reached via "at Y",
 # e.g. "Brightview Energy is pleased to extend an offer for the Electrical Engineer
 # position." — neither template above fires here since there's no "at <company>".
@@ -163,6 +170,10 @@ def find_position(text: str, sender: str) -> tuple[str | None, str]:
         return match.group("position").strip(" .,"), "template"
 
     match = _POSITION_ROLE_RE.search(text)
+    if match:
+        return match.group("position").strip(" .,"), "template"
+
+    match = _POSITION_AS_NEW_RE.search(text)
     if match:
         return match.group("position").strip(" .,"), "template"
 
