@@ -34,7 +34,23 @@ _PUNCTUATION_NORMALIZE_RE = re.compile("|".join(re.escape(c) for c in _PUNCTUATI
 
 
 def _strip_greeting_lines(body: str) -> str:
-    return _GREETING_LINE_RE.sub("", body)
+    # Substituting "." (not "") preserves a sentence-boundary marker through the
+    # whitespace collapse that happens later in combine_subject_body/normalize_text —
+    # without it, deleting a greeting line merges the sentence before it and the
+    # sentence after it into one run with nothing but a space between them, and
+    # fields.py's capitalized-word-run company capture can't tell where the greeting
+    # used to be, so it can run straight into the next sentence's first (also
+    # capitalized) word (e.g. "at Solace Systems" + "Unfortunately, we..." becomes
+    # "Solace Systems Unfortunately"). See fields.py's _COMPANY_BOUNDARY, widened
+    # alongside this change to actually stop there.
+    stripped = _GREETING_LINE_RE.sub(".", body)
+    if not stripped.strip(" .\n\t"):
+        # The "greeting" match consumed the entire body (a short single-line message
+        # that happens to open with a greeting word and end in a comma/colon, e.g.
+        # "Hi Jordan, your offer is attached,") — stripping it would destroy the whole
+        # message. Treat it as real content instead of a greeting in that case.
+        return body
+    return stripped
 
 
 def _truncate_at_signature(body: str) -> str:

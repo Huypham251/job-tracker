@@ -149,3 +149,39 @@ def test_classify_and_extract_raises_classification_error_not_validation_error_o
             date="Tue, 6 Jan 2026 09:00:00 +0000",
             body="We would like to invite you to interview for the Backend Engineer position at Acme Corp.",
         )
+
+
+def test_classify_and_extract_company_not_polluted_by_sentence_after_stripped_greeting() -> None:
+    extractor = RuleBasedExtractor()
+
+    result = extractor.classify_and_extract(
+        subject="Update on your application",
+        sender="careers@solacesystems.com",
+        date="Sat, 14 Feb 2026 09:00:00 +0000",
+        body=(
+            "Thank you for your interest in the Backend Developer role at Solace Systems\n\n"
+            "Hi Avery,\n\n"
+            "Unfortunately, we have decided to move forward with other candidates for this position."
+        ),
+    )
+
+    assert result.company == "Solace Systems"
+    assert result.status == "rejected"
+
+
+def test_classify_and_extract_company_not_polluted_when_greeting_precedes_signoff_sentence() -> None:
+    extractor = RuleBasedExtractor()
+
+    result = extractor.classify_and_extract(
+        subject="Offer of employment - Redwood Biotech",
+        sender="hr@redwoodbiotech.com",
+        date="Sun, 15 Feb 2026 09:00:00 +0000",
+        body=(
+            "We are pleased to offer you the Research Associate position at Redwood Biotech\n\n"
+            "Hi Casey,\n\n"
+            "Please find the offer of employment attached."
+        ),
+    )
+
+    assert result.company == "Redwood Biotech"
+    assert result.status == "offer"

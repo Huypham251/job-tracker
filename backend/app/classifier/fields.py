@@ -34,7 +34,7 @@ _ROLE_SUFFIX_WORDS = {"recruiting", "talent", "careers", "hr", "team"}
 # capitalization check (IGNORECASE would otherwise make [A-Z] match lowercase
 # too, defeating the point).
 _COMPANY_TOKEN = r"(?-i:[A-Z][\w&'\-]*(?:\s[A-Z][\w&'\-]*){0,4})"
-_COMPANY_BOUNDARY = r"(?=[.,!]|\s+(?:for|and|regarding|about|which|who)\b|\s*$)"
+_COMPANY_BOUNDARY = r"(?=\s*[.,!]|\s+(?:for|and|regarding|about|which|who)\b|\s*$)"
 
 # Job titles are short, word-shaped strings — never sentence punctuation, never
 # many words. Bounded the same way _COMPANY_TOKEN above is bounded, instead of

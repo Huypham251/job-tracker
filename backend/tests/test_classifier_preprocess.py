@@ -45,3 +45,15 @@ def test_does_not_truncate_when_a_signoff_word_opens_the_body() -> None:
     )
     result = preprocess_body(body)
     assert "We are pleased to offer you the Software Engineer position at Acme Corp." in result
+
+
+def test_does_not_erase_a_short_body_that_is_entirely_a_greeting_line() -> None:
+    body = "Hi Jordan, your offer is attached,"
+    result = preprocess_body(body)
+    assert result == body
+
+
+def test_does_not_erase_a_short_body_ending_in_a_colon() -> None:
+    body = "Hello team, interview scheduled for Tuesday:"
+    result = preprocess_body(body)
+    assert result == body
