@@ -4,7 +4,10 @@ from email.utils import parsedate_to_datetime
 
 _HEADER_ADDR_RE = re.compile(r"<([^>]+)>")
 _DISPLAY_NAME_RE = re.compile(r'^\s*"?([^"<]*?)"?\s*<')
-_SUBDOMAIN_PREFIXES = ("mail.", "notifications.", "e.", "no-reply.", "noreply.")
+_SUBDOMAIN_PREFIXES = (
+    "mail.", "notifications.", "e.", "no-reply.", "noreply.",
+    "careers.", "jobs.", "talent.", "recruiting.",
+)
 _WHITESPACE_RE = re.compile(r"\s+")
 
 

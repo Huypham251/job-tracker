@@ -58,7 +58,8 @@ _POSITION_TOKEN = r"[\w&'/+\-]+(?:\s[\w&'/+\-]+){0,5}"
 # the original for/to/in prepositions, so that phrasing fell through to the
 # weaker domain-derived company guess and to no position match at all.
 _POSITION_AT_COMPANY_RE = re.compile(
-    rf"(?:for|to|in|you) the (?P<position>{_POSITION_TOKEN}) (?:position|role) at (?P<company>{_COMPANY_TOKEN}){_COMPANY_BOUNDARY}",
+    rf"(?:for|to|in|you|about) the (?P<position>{_POSITION_TOKEN}) "
+    rf"(?:position|role|opening|opportunity) at (?P<company>{_COMPANY_TOKEN}){_COMPANY_BOUNDARY}",
     re.IGNORECASE,
 )
 _APPLICATION_TO_COMPANY_RE = re.compile(
@@ -69,6 +70,48 @@ _POSITION_ROLE_RE = re.compile(
     rf"for the (?P<position>{_POSITION_TOKEN}) (?:position|role)\b",
     re.IGNORECASE,
 )
+# Handles a company stated as the sentence's subject rather than reached via "at Y",
+# e.g. "Brightview Energy is pleased to extend an offer for the Electrical Engineer
+# position." — neither template above fires here since there's no "at <company>".
+_COMPANY_PLEASED_TO_OFFER_RE = re.compile(
+    rf"(?P<company>{_COMPANY_TOKEN}) (?:is|are) pleased to (?:offer|extend an offer)",
+    re.IGNORECASE,
+)
+
+# Words that mark the start of a greeting that immediately follows a company mention
+# with no intervening punctuation (a common HTML-paragraph-to-text-conversion
+# artifact — see the Phase 6 spec's "Anduril Hi Gia Huy" root-cause analysis). Task 6's
+# preprocess.py already strips *standalone* greeting lines before this code ever runs;
+# this is the second, narrower line of defense for a greeting that survives on the same
+# line as real content.
+_GREETING_STOPWORDS = {"hi", "hello", "hey", "dear", "greetings"}
+
+
+def _trim_trailing_greeting(span: str) -> str:
+    words = span.split()
+    for i, word in enumerate(words):
+        if word.lower().strip(",.!") in _GREETING_STOPWORDS:
+            return " ".join(words[:i]).strip()
+    return span
+
+
+# When a subject line ends with the company name and the body's next sentence starts
+# with it again (e.g. subject "Your offer from Brightview Energy" + body "Brightview
+# Energy is pleased to..."), combine_subject_body's single-space join puts the two
+# mentions directly adjacent with nothing but a space between them — _COMPANY_TOKEN's
+# capitalized-word-run capture (used by every template above) has no way to tell that's
+# two mentions of one company rather than one long name, and captures both:
+# "Brightview Energy Brightview Energy". This collapses an exact repeated half back
+# down to one — safe because a genuine company name being a literal word-for-word
+# self-repeat ("Design Design") essentially never happens in practice.
+def _dedupe_repeated_span(span: str) -> str:
+    words = span.split()
+    n = len(words)
+    if n > 0 and n % 2 == 0:
+        half = n // 2
+        if [w.lower() for w in words[:half]] == [w.lower() for w in words[half:]]:
+            return " ".join(words[:half])
+    return span
 
 
 def _domain_derived_company(sender: str) -> str | None:
@@ -91,11 +134,15 @@ def _display_name_derived_company(sender: str) -> str | None:
 def find_company(text: str, sender: str) -> tuple[str | None, str]:
     match = _POSITION_AT_COMPANY_RE.search(text)
     if match:
-        return match.group("company").strip(" .,"), "template"
+        return _dedupe_repeated_span(_trim_trailing_greeting(match.group("company").strip(" .,"))), "template"
 
     match = _APPLICATION_TO_COMPANY_RE.search(text)
     if match:
-        return match.group("company").strip(" .,"), "template"
+        return _dedupe_repeated_span(_trim_trailing_greeting(match.group("company").strip(" .,"))), "template"
+
+    match = _COMPANY_PLEASED_TO_OFFER_RE.search(text)
+    if match:
+        return _dedupe_repeated_span(_trim_trailing_greeting(match.group("company").strip(" .,"))), "template"
 
     domain_company = _domain_derived_company(sender)
     if domain_company:

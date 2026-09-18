@@ -74,6 +74,8 @@ ATS_DOMAINS: frozenset[str] = frozenset(
         # as a domain-derived company guess (app/classifier/fields.py).
         "hackerrank.com",
         "codesignal.com",
+        "testgorilla.com",
+        "codility.com",
     }
 )
 

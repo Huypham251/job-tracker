@@ -48,3 +48,10 @@ def test_parse_email_date_valid_rfc2822() -> None:
 
 def test_parse_email_date_invalid_returns_none() -> None:
     assert parse_email_date("not a date") is None
+
+
+def test_extract_sender_domain_strips_careers_jobs_talent_recruiting_subdomains() -> None:
+    assert extract_sender_domain("talent@careers.pinnaclerobotics.com") == "pinnaclerobotics.com"
+    assert extract_sender_domain("jobs@jobs.cobaltdata.io") == "cobaltdata.io"
+    assert extract_sender_domain("talent@talent.fernwooddesign.com") == "fernwooddesign.com"
+    assert extract_sender_domain("recruiting@recruiting.trellishealth.com") == "trellishealth.com"

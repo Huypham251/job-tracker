@@ -110,3 +110,59 @@ def test_find_company_and_position_via_offer_you_the_phrasing() -> None:
     text = "We are pleased to offer you the Backend Engineer position at Acme Corp."
     assert find_company(text, "careers@acme.com") == ("Acme Corp", "template")
     assert find_position(text, "careers@acme.com") == ("Backend Engineer", "template")
+
+
+def test_find_company_trims_a_trailing_greeting_after_applying_to_template() -> None:
+    text = "Thank you for applying to Pinnacle Robotics Hi Jordan Lee, we have received your application."
+    company, tier = find_company(text, "careers@pinnaclerobotics.com")
+    assert company == "Pinnacle Robotics"
+    assert tier == "template"
+
+
+def test_find_company_trims_a_trailing_greeting_after_position_at_company_template() -> None:
+    text = "We would like to invite you to interview for the Product Designer position at Fernwood Design Hi Morgan, please pick a time."
+    company, tier = find_company(text, "careers@fernwooddesign.com")
+    assert company == "Fernwood Design"
+
+
+def test_find_company_matches_opening_and_opportunity_keywords() -> None:
+    text = "I think you'd be a great fit for the Senior Mechanical Engineer opening at Pinnacle Robotics."
+    company, tier = find_company(text, "recruiter@pinnaclerobotics.com")
+    assert company == "Pinnacle Robotics"
+    assert tier == "template"
+
+
+def test_find_company_matches_about_the_leading_word() -> None:
+    text = "I'm reaching out about the Data Engineer opportunity at Cobalt Data."
+    company, tier = find_company(text, "jane.kim@cobaltdata.io")
+    assert company == "Cobalt Data"
+
+
+def test_find_company_matches_is_pleased_to_offer_template() -> None:
+    text = "Brightview Energy is pleased to extend an offer for the Electrical Engineer position."
+    company, tier = find_company(text, "hr@brightviewenergy.com")
+    assert company == "Brightview Energy"
+    assert tier == "template"
+
+
+def test_find_company_dedupes_when_subject_and_body_both_mention_the_company_adjacently() -> None:
+    # combine_subject_body joins "Your offer from Brightview Energy" (subject) and
+    # "Brightview Energy is pleased to..." (body) with a single space, producing
+    # "...Brightview Energy Brightview Energy is pleased..." — without deduping, the
+    # capitalized-run capture swallows both mentions as one company name.
+    text = "Your offer from Brightview Energy Brightview Energy is pleased to extend an offer for the Electrical Engineer position."
+    company, tier = find_company(text, "hr@brightviewenergy.com")
+    assert company == "Brightview Energy"
+    assert tier == "template"
+
+
+def test_find_company_strips_careers_and_talent_subdomain_prefixes() -> None:
+    company, tier = find_company("no template match here", "talent@careers.pinnaclerobotics.com")
+    assert company == "Pinnaclerobotics"
+    assert tier == "domain"
+
+
+def test_find_company_does_not_treat_non_ats_assessment_platform_as_the_company() -> None:
+    company, tier = find_company("no template match here", "noreply@testgorilla.com")
+    assert company is None
+    assert tier == "none"
