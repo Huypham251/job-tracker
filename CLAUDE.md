@@ -7,7 +7,7 @@ under `docs/superpowers/plans/` remain the source of truth for what was decided 
 ## Status
 
 Phases 1–6 are complete, merged to `main`, and Phase 5 was manually verified end-to-end
-against a real Gmail account (2026-09-17) — see "Manual testing findings" below. Backend: 269/269
+against a real Gmail account (2026-09-17) — see "Manual testing findings" below. Backend: 273/273
 tests passing. Frontend:
 `tsc -b` clean, `oxlint` clean (0 errors, 3 pre-existing warnings in
 `AuthContext.tsx`/`useApplications.ts`, unrelated to any phase and not touched by any of
