@@ -23,10 +23,10 @@ from evaluation.run_eval import CONFIDENCE_THRESHOLD, evaluate, load_dataset
 
 MIN_CLASSIFICATION_ACCURACY = 0.97  # currently 87/88=0.989; tolerates 86/88=0.977; fails at 85/88=0.966
 MIN_STATUS_ACCURACY = 0.98  # currently 72/72=1.0; tolerates 71/72=0.986; fails at 70/72=0.972
-MIN_COMPANY_ACCURACY = 0.74  # exact-match, same as Phase 4b (not fuzzy); currently 55/72=0.764; tolerates 54/72=0.75; fails at 53/72=0.736
-MIN_POSITION_ACCURACY = 0.92  # exact-match, same as Phase 4b (not fuzzy); currently 61/65=0.938; tolerates 60/65=0.923; fails at 59/65=0.908
-MIN_PRECISION_AT_THRESHOLD = 0.90  # guards real auto-applies — the most important bar; currently 26/27=0.963; tolerates 25/27=0.926; fails at 24/27=0.889
-MIN_AUTO_APPLY_RATE = 0.36  # a floor: confirms Task 10 didn't silently regress; currently 27/72=0.375; tolerates 26/72=0.361; fails at 25/72=0.347
+MIN_COMPANY_ACCURACY = 0.84  # exact-match, same as Phase 4b (not fuzzy); currently 62/72=0.861; tolerates 61/72=0.847; fails at 60/72=0.833
+MIN_POSITION_ACCURACY = 0.93  # exact-match, same as Phase 4b (not fuzzy); currently 62/65=0.954; tolerates 61/65=0.938; fails at 60/65=0.923
+MIN_PRECISION_AT_THRESHOLD = 0.96  # guards real auto-applies — the most important bar; currently 31/31=1.0; tolerates 30/31=0.968; fails at 29/31=0.935
+MIN_AUTO_APPLY_RATE = 0.41  # a floor: confirms the final whole-branch-review fix didn't silently regress; currently 31/72=0.431; tolerates 30/72=0.417; fails at 29/72=0.403
 
 
 def test_classification_accuracy_meets_minimum_bar() -> None:

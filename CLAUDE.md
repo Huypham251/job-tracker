@@ -6,7 +6,8 @@ under `docs/superpowers/plans/` remain the source of truth for what was decided 
 
 ## Status
 
-Phases 1–6 are complete, merged to `main` — see "Manual testing findings" below. Backend: 269/269
+Phases 1–6 are complete, merged to `main`, and Phase 5 was manually verified end-to-end
+against a real Gmail account (2026-09-17) — see "Manual testing findings" below. Backend: 269/269
 tests passing. Frontend:
 `tsc -b` clean, `oxlint` clean (0 errors, 3 pre-existing warnings in
 `AuthContext.tsx`/`useApplications.ts`, unrelated to any phase and not touched by any of
@@ -270,10 +271,10 @@ change, against the new dataset) as the "before" column and
 |---|---|---|
 | classification_accuracy | 0.761 | 0.989 |
 | status_accuracy | 0.722 | 1.0 |
-| company_exact_accuracy | 0.444 | 0.764 |
-| position_exact_accuracy | 0.692 | 0.938 |
-| precision_at_threshold | 0.828 | 0.963 |
-| auto_apply_rate | 0.403 | 0.375 |
+| company_exact_accuracy | 0.444 | 0.861 |
+| position_exact_accuracy | 0.692 | 0.954 |
+| precision_at_threshold | 0.828 | 1.0 |
+| auto_apply_rate | 0.403 | 0.431 |
 
 `JOB_SIGNAL_NORM`/`MARGIN_NORM` recalibrated from `6.0`/`4.0` to `4.5`/`3.0` (Task
 10) — the first-pass values held on the first attempt, with no fallback to `5.0`/`3.5`
@@ -282,16 +283,26 @@ the Task 9 checkpoint, `auto_apply_rate` visibly increasing from it — both pas
 immediately). `settings.classification_confidence_threshold` (`0.85`) was not changed,
 per the Phase 6 spec's explicit scope decision.
 
-**Known residual gap, not fixed this phase**: `auto_apply_rate` (0.375) is still below
-the original pre-Phase-6 baseline (0.403), even though `precision_at_threshold`
-improved substantially (0.828 → 0.963) — the metric the spec explicitly prioritizes. By
-category, `recruiter_outreach` (auto_apply_rate=0.0) and `messy_phrasing`
-(auto_apply_rate=0.1) still route almost everything to review despite now being
-correctly classified and extracted — their confidence still doesn't cross 0.85, since
-most of their examples rely on the domain-fallback or display-name extraction tier (a
-0.15 confidence penalty) rather than a template match. This is a genuine, honest
-residual gap — not fixed this phase — worth flagging for a future recalibration pass
-focused specifically on non-template extraction tiers, alongside the two gaps below.
+**Cross-task bug found and fixed during final whole-branch review, not a planned
+task**: `auto_apply_rate` initially landed at 0.375 (Task 10's checkpoint above,
+`precision_at_threshold` 0.963) — below the original pre-Phase-6 baseline of 0.403, even
+though `precision_at_threshold` had improved substantially. The final whole-branch
+review traced this to a cross-task interaction, not the confidence formula: Task 6's
+`preprocess.py::_strip_greeting_lines` deleted a matched greeting line outright, which
+collapsed the sentence boundary company extraction (Task 7) depended on — a body like
+"...at Solace Systems\n\nHi Avery,\n\nUnfortunately, we..." lost its paragraph break
+entirely once whitespace collapsed, so the capitalized-word-run company capture ran
+straight through "Systems" into the next sentence's capitalized first word
+("Unfortunately"), bypassing Task 7's trailing-greeting trim (which only strips an
+actual greeting word, not an arbitrary next-sentence word). Fixing that (substituting a
+sentence-boundary marker instead of empty string, and widening the company-boundary
+lookahead to match it) closed the gap the recalibration alone hadn't:
+`auto_apply_rate` now exceeds the original baseline (0.431 > 0.403),
+`company_exact_accuracy` improved further (0.764 → 0.861), and `precision_at_threshold`
+reached 1.0. See the classifier module for the fix; it's covered by regression tests at
+the `classify_and_extract` seam, not just isolated `find_company`/`preprocess_body`
+calls, so a future regression in either function alone or in their interaction would be
+caught.
 
 **Two more known gaps, found during Task 9's pre-flight verification and task review,
 not fixed this phase**:
