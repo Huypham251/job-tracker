@@ -117,6 +117,21 @@ def test_get_message_body_falls_back_to_html_and_strips_tags(monkeypatch) -> Non
     assert google_api.get_message_body("token", "m1") == "Hello World"
 
 
+def test_get_message_body_strips_style_and_script_block_contents(monkeypatch) -> None:
+    raw = (
+        "<html><head>"
+        "<style>.unsubscribe-link { color: blue; font-weight: bold; }</style>"
+        "<script>function trackClick() { return true; }</script>"
+        "</head><body><p>Thanks for applying to Acme.</p></body></html>"
+    )
+    payload = {"payload": {"mimeType": "text/html", "body": {"data": _b64(raw)}}}
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
+    result = google_api.get_message_body("token", "m1")
+    assert result == "Thanks for applying to Acme."
+    assert "unsubscribe-link" not in result
+    assert "trackClick" not in result
+
+
 def test_get_message_body_strips_quoted_replies(monkeypatch) -> None:
     raw = (
         "Please see below.\n\n"

@@ -13,6 +13,7 @@ _TIMEOUT = 10.0
 BODY_MAX_CHARS = 4000
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
+_HTML_STYLE_SCRIPT_RE = re.compile(r"<(style|script)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
 _QUOTE_LINE_RE = re.compile(r"^>.*$", re.MULTILINE)
 _ON_WROTE_RE = re.compile(r"^On .+ wrote:\s*$", re.MULTILINE)
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -149,6 +150,7 @@ def _clean_text(raw: str, *, is_html: bool) -> str:
     text = _ON_WROTE_RE.sub("", raw)
     text = _QUOTE_LINE_RE.sub("", text)
     if is_html:
+        text = _HTML_STYLE_SCRIPT_RE.sub(" ", text)
         text = _HTML_TAG_RE.sub(" ", text)
         text = html.unescape(text)
     text = _WHITESPACE_RE.sub(" ", text).strip()
