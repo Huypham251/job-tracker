@@ -19,6 +19,7 @@ from app.classifier.patterns import (
     JOB_SIGNAL_NORM,
     MARGIN_NORM,
 )
+from app.classifier.preprocess import preprocess_body
 from app.classifier.text import combine_subject_body, extract_sender_domain, normalize_text
 from evaluation.run_eval import load_dataset
 
@@ -30,6 +31,7 @@ def main() -> None:
             continue
 
         subject, sender, body = example["subject"], example["sender"], example["body"]
+        body = preprocess_body(body)
         text = normalize_text(subject, body)
         sender_domain = extract_sender_domain(sender)
         status_scores, job_signal, negative_signal = classify(text, sender_domain)
