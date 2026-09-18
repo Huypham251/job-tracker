@@ -6,8 +6,7 @@ under `docs/superpowers/plans/` remain the source of truth for what was decided 
 
 ## Status
 
-Phases 1–5 are complete, merged to `main`, and manually verified end-to-end against a
-real Gmail account (2026-09-17) — see "Manual testing findings" below. Backend: 233/233
+Phases 1–6 are complete, merged to `main` — see "Manual testing findings" below. Backend: 269/269
 tests passing. Frontend:
 `tsc -b` clean, `oxlint` clean (0 errors, 3 pre-existing warnings in
 `AuthContext.tsx`/`useApplications.ts`, unrelated to any phase and not touched by any of
@@ -26,6 +25,11 @@ them). Working tree clean, no uncommitted changes.
   backfill (180 days), watermark-based incremental sync thereafter, retry/backoff on
   transient Gmail failures, a stale-job reaper, and safe (non-leaking) user-facing error
   messages. `process_inbox` and `POST /pipeline/process` are gone.
+- Phase 6: classifier/extraction quality — larger, category-labeled evaluation
+  dataset (88 examples); preprocessing (greeting/signature stripping, punctuation
+  normalization); extraction fixes (greeting-bleed trim, broadened templates,
+  subdomain/assessment-platform gaps); status-pattern coverage; measured confidence
+  recalibration. See "Phase 6 results" below.
 
 **Read `2026-09-15-job-tracker-phase-4-pipeline-design.md` for the pipeline architecture
 that's still current (matching, trust model, DB schema, `/pipeline/review*` API,
@@ -47,6 +51,8 @@ backend/app/
 │   ├── text.py        normalization, sender-domain/display-name parsing
 │   ├── patterns.py     weighted phrase tables, ATS-domain lists, tunable constants
 │   ├── fields.py        company/position regex extraction (ordered fallback tiers)
+│   ├── preprocess.py    Phase 6 — greeting/signature stripping, punctuation
+│   │                       normalization, applied before scoring/extraction
 │   ├── extractor.py      Extractor Protocol, ClassificationError, RuleBasedExtractor
 │   └── schemas.py         EmailExtraction (Pydantic contract)
 ├── pipeline/         Phase 4 — per-message decision/trust logic (provider-agnostic)
@@ -249,6 +255,58 @@ review rather than auto-applying something wrong — the trust-model gate did it
 but it's real signal that `classifier/patterns.py`'s constants could use a re-tuning
 pass against real-world mail, not just the evaluation dataset, whenever that's prioritized.
 
+## Phase 6 results (2026-09-17)
+
+Evaluation dataset grew from 18 to 88 examples (the original 18 kept as
+`clean_template`; 70 added across `html_noise`, `greeting_adjacent`,
+`signature_footer`, `recruiter_outreach`, `ambiguous`, `sender_variation`, and
+`messy_phrasing` — see `docs/superpowers/specs/2026-09-17-job-tracker-phase-6-classifier-quality-design.md`
+and the accompanying plan for the category rationale). Measured with
+`evaluation/baseline_metrics.json` (today's classifier, before any Phase 6 code
+change, against the new dataset) as the "before" column and
+`uv run python -m evaluation.compare`'s final output as "after":
+
+| metric | before | after |
+|---|---|---|
+| classification_accuracy | 0.761 | 0.989 |
+| status_accuracy | 0.722 | 1.0 |
+| company_exact_accuracy | 0.444 | 0.764 |
+| position_exact_accuracy | 0.692 | 0.938 |
+| precision_at_threshold | 0.828 | 0.963 |
+| auto_apply_rate | 0.403 | 0.375 |
+
+`JOB_SIGNAL_NORM`/`MARGIN_NORM` recalibrated from `6.0`/`4.0` to `4.5`/`3.0` (Task
+10) — the first-pass values held on the first attempt, with no fallback to `5.0`/`3.5`
+needed (Task 10's acceptance criteria — `precision_at_threshold` not regressing from
+the Task 9 checkpoint, `auto_apply_rate` visibly increasing from it — both passed
+immediately). `settings.classification_confidence_threshold` (`0.85`) was not changed,
+per the Phase 6 spec's explicit scope decision.
+
+**Known residual gap, not fixed this phase**: `auto_apply_rate` (0.375) is still below
+the original pre-Phase-6 baseline (0.403), even though `precision_at_threshold`
+improved substantially (0.828 → 0.963) — the metric the spec explicitly prioritizes. By
+category, `recruiter_outreach` (auto_apply_rate=0.0) and `messy_phrasing`
+(auto_apply_rate=0.1) still route almost everything to review despite now being
+correctly classified and extracted — their confidence still doesn't cross 0.85, since
+most of their examples rely on the domain-fallback or display-name extraction tier (a
+0.15 confidence penalty) rather than a template match. This is a genuine, honest
+residual gap — not fixed this phase — worth flagging for a future recalibration pass
+focused specifically on non-template extraction tiers, alongside the two gaps below.
+
+**Two more known gaps, found during Task 9's pre-flight verification and task review,
+not fixed this phase**:
+- One `ambiguous`-category dataset example (a "hiring managers panel" meetup
+  announcement) is a false positive, driven entirely by original, pre-Phase-6 patterns
+  (`interview (?:invitation|process)` + `\bcandidates?\b`) that this phase didn't touch
+  — real signal that those two original patterns are too loosely scoped for some real
+  non-recruiting business correspondence.
+- The new `\bopening\b`/`\bopportunity\b` `GENERIC_JOB_PATTERNS` entries (weight 3 each,
+  added in Task 9) can alone cross the job-relatedness threshold with zero corroboration
+  — a deliberate, dataset-verified trade-off (needed for `recruiter_outreach`
+  classification to work at all), but real mail beyond this evaluation dataset
+  (marketing "grand opening" emails, generic biz-dev "opportunity" outreach) could
+  trigger false positives these 88 examples don't exercise.
+
 ## Local dev environment (this machine)
 
 An unrelated project (`~/chasel/chasel-frontend`) occupies ports 5173–5177 on this
@@ -275,7 +333,11 @@ Backend: `cd backend && uv run pytest`. Frontend: `cd frontend && npx tsc -b && 
 oxlint`. Every backend test mocks the `Extractor` Protocol or Gmail's `google_api`
 module — no test makes a real network call. `evaluation/run_eval.py` is *not* part of
 the pytest suite (it's a standalone reporting script); `tests/test_evaluation_accuracy.py`
-is the automated subset of it.
+is the automated subset of it. `evaluation/compare.py` diffs the current classifier
+against the Phase 6 baseline (`evaluation/baseline_metrics.json`, frozen at Task 4 and
+never edited again) — run it after any future `app/classifier/` change to see the
+before/after impact directly. `evaluation/inspect_confidence.py` prints the
+confidence-formula components per example, for recalibration work.
 
 Three non-obvious test techniques introduced in Phase 5, in `backend/tests/test_sync_worker.py`
 (the third in its own file), worth knowing about before extending either:
