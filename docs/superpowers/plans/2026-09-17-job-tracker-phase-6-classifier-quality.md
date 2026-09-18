@@ -320,13 +320,30 @@ the domain-derived company guess instead of falling through. Where an example's
 that's intentional — it's the best a domain-label fallback can produce (same accepted
 imperfection as the original dataset's `"Eta"` vs. real `"Eta Ltd"`), not a typo.
 
+**Correction found during Task 7 pre-flight verification** (before Task 7 was
+dispatched, simulating its planned regex against the full dataset): the "Offer
+details"/`recruiting.trellishealth.com` example below was designed to exercise the
+`recruiting.` subdomain-prefix fix via the domain-fallback path, but its body text
+("Trellis Health is pleased to extend an offer...") also matches Task 7's new
+`_COMPANY_PLEASED_TO_OFFER_RE` template — which correctly wins (template tier beats
+domain-fallback tier), extracting the fuller, more accurate `"Trellis Health"` instead
+of the domain-derived `"Trellishealth"`. This is a genuine improvement, not a bug — the
+template match makes the domain-fallback path unreachable for this one example. Its
+`expected.company` below is corrected to `"Trellis Health"` to match. The `recruiting.`
+prefix-stripping behavior itself stays fully covered independently — Task 7 adds a
+direct unit test on `extract_sender_domain("recruiting@recruiting.trellishealth.com")`
+in `test_classifier_text.py` — so there's no coverage gap, just a corrected expected
+value in this one dataset line. (The other three subdomain examples — `careers.`,
+`jobs.`, `talent.` — have bodies with no "is/are pleased to offer" phrasing, so they
+still correctly exercise the domain-fallback path end-to-end.)
+
 ```json
 {"category": "sender_variation", "subject": "Following up on your application", "sender": "Talent Team <talent@careers.pinnaclerobotics.com>", "date": "Mon, 23 Mar 2026 09:00:00 +0000", "body": "Hi, thanks for your patience. We have received your application and are currently reviewing candidates for this position.", "expected": {"is_job_related": true, "company": "Pinnaclerobotics", "status": "applied"}}
 {"category": "sender_variation", "subject": "Interview scheduling", "sender": "Jobs at Cobalt <jobs@jobs.cobaltdata.io>", "date": "Tue, 24 Mar 2026 09:00:00 +0000", "body": "We would like to invite you to interview. Please pick a time that works best for you from the calendar below.", "expected": {"is_job_related": true, "company": "Cobaltdata", "status": "interview"}}
 {"category": "sender_variation", "subject": "Assessment reminder", "sender": "Talent Acquisition <talent@talent.fernwooddesign.com>", "date": "Wed, 25 Mar 2026 09:00:00 +0000", "body": "This is a reminder to complete your online assessment before the deadline. Let us know if you have any questions.", "expected": {"is_job_related": true, "company": "Fernwooddesign", "status": "oa"}}
 {"category": "sender_variation", "subject": "Application confirmation", "sender": "No Reply <donotreply@bamboohr.com>", "date": "Thu, 26 Mar 2026 09:00:00 +0000", "body": "Thank you for applying to Vantage Point Consulting through our careers portal. We have received your application for the Business Analyst position.", "expected": {"is_job_related": true, "company": "Vantage Point Consulting", "position": "Business Analyst", "status": "applied"}}
 {"category": "sender_variation", "subject": "Complete your assessment for Ironclad Security", "sender": "Assessments <noreply@testgorilla.com>", "date": "Fri, 27 Mar 2026 09:00:00 +0000", "body": "Ironclad Security has invited you to complete a take-home assignment for the Security Analyst position via TestGorilla.", "expected": {"is_job_related": true, "company": "Ironclad Security", "position": "Security Analyst", "status": "oa"}}
-{"category": "sender_variation", "subject": "Offer details", "sender": "Recruiting <recruiting@recruiting.trellishealth.com>", "date": "Sat, 28 Mar 2026 09:00:00 +0000", "body": "Trellis Health is pleased to extend an offer for the Care Coordinator position. Welcome aboard!", "expected": {"is_job_related": true, "company": "Trellishealth", "position": "Care Coordinator", "status": "offer"}}
+{"category": "sender_variation", "subject": "Offer details", "sender": "Recruiting <recruiting@recruiting.trellishealth.com>", "date": "Sat, 28 Mar 2026 09:00:00 +0000", "body": "Trellis Health is pleased to extend an offer for the Care Coordinator position. Welcome aboard!", "expected": {"is_job_related": true, "company": "Trellis Health", "position": "Care Coordinator", "status": "offer"}}
 {"category": "sender_variation", "subject": "Coding test for Cascade Robotics", "sender": "codility <no-reply@codility.com>", "date": "Sun, 29 Mar 2026 09:00:00 +0000", "body": "Cascade Robotics has invited you to complete a coding challenge for the Firmware Engineer position.", "expected": {"is_job_related": true, "company": "Cascade Robotics", "position": "Firmware Engineer", "status": "oa"}}
 {"category": "sender_variation", "subject": "Your application to Meridian Labs", "sender": "Meridian Labs <careers@jobs.meridianlabs.ai>", "date": "Mon, 30 Mar 2026 09:00:00 +0000", "body": "Thank you for applying to Meridian Labs. We have received your application for the Machine Learning Engineer position.", "expected": {"is_job_related": true, "company": "Meridian Labs", "position": "Machine Learning Engineer", "status": "applied"}}
 {"category": "sender_variation", "subject": "Update on your application", "sender": "HR Team <hr@northstarlogistics.com>", "date": "Tue, 31 Mar 2026 09:00:00 +0000", "body": "Thank you for your interest in the Supply Chain Analyst role at Northstar Logistics. Unfortunately, we have decided to move forward with other candidates for this position.", "expected": {"is_job_related": true, "company": "Northstar Logistics", "position": "Supply Chain Analyst", "status": "rejected"}}
@@ -1245,6 +1262,17 @@ def test_find_company_matches_is_pleased_to_offer_template() -> None:
     assert tier == "template"
 
 
+def test_find_company_dedupes_when_subject_and_body_both_mention_the_company_adjacently() -> None:
+    # combine_subject_body joins "Your offer from Brightview Energy" (subject) and
+    # "Brightview Energy is pleased to..." (body) with a single space, producing
+    # "...Brightview Energy Brightview Energy is pleased..." — without deduping, the
+    # capitalized-run capture swallows both mentions as one company name.
+    text = "Your offer from Brightview Energy Brightview Energy is pleased to extend an offer for the Electrical Engineer position."
+    company, tier = find_company(text, "hr@brightviewenergy.com")
+    assert company == "Brightview Energy"
+    assert tier == "template"
+
+
 def test_find_company_strips_careers_and_talent_subdomain_prefixes() -> None:
     company, tier = find_company("no template match here", "talent@careers.pinnaclerobotics.com")
     assert company == "Pinnaclerobotics"
@@ -1345,23 +1373,42 @@ def _trim_trailing_greeting(span: str) -> str:
         if word.lower().strip(",.!") in _GREETING_STOPWORDS:
             return " ".join(words[:i]).strip()
     return span
+
+
+# When a subject line ends with the company name and the body's next sentence starts
+# with it again (e.g. subject "Your offer from Brightview Energy" + body "Brightview
+# Energy is pleased to..."), combine_subject_body's single-space join puts the two
+# mentions directly adjacent with nothing but a space between them — _COMPANY_TOKEN's
+# capitalized-word-run capture (used by every template above) has no way to tell that's
+# two mentions of one company rather than one long name, and captures both:
+# "Brightview Energy Brightview Energy". This collapses an exact repeated half back
+# down to one — safe because a genuine company name being a literal word-for-word
+# self-repeat ("Design Design") essentially never happens in practice.
+def _dedupe_repeated_span(span: str) -> str:
+    words = span.split()
+    n = len(words)
+    if n > 0 and n % 2 == 0:
+        half = n // 2
+        if [w.lower() for w in words[:half]] == [w.lower() for w in words[half:]]:
+            return " ".join(words[:half])
+    return span
 ```
 
-Then update `find_company` to try the new template and trim every template result:
+Then update `find_company` to try the new template, and trim + dedupe every template result:
 
 ```python
 def find_company(text: str, sender: str) -> tuple[str | None, str]:
     match = _POSITION_AT_COMPANY_RE.search(text)
     if match:
-        return _trim_trailing_greeting(match.group("company").strip(" .,")), "template"
+        return _dedupe_repeated_span(_trim_trailing_greeting(match.group("company").strip(" .,"))), "template"
 
     match = _APPLICATION_TO_COMPANY_RE.search(text)
     if match:
-        return _trim_trailing_greeting(match.group("company").strip(" .,")), "template"
+        return _dedupe_repeated_span(_trim_trailing_greeting(match.group("company").strip(" .,"))), "template"
 
     match = _COMPANY_PLEASED_TO_OFFER_RE.search(text)
     if match:
-        return _trim_trailing_greeting(match.group("company").strip(" .,")), "template"
+        return _dedupe_repeated_span(_trim_trailing_greeting(match.group("company").strip(" .,"))), "template"
 
     domain_company = _domain_derived_company(sender)
     if domain_company:
@@ -1388,7 +1435,20 @@ alternations are strict supersets of the old ones).
 Run: `cd backend && uv run python -m evaluation.compare`
 Expected: `company_exact_accuracy`/`company_fuzzy_accuracy` improve, particularly in
 the `greeting_adjacent`, `recruiter_outreach`, and `sender_variation` category
-breakdowns; no `REGRESSION` marker anywhere.
+breakdowns.
+
+One understood, accepted exception if it shows up: the `clean_template` category's
+`company_exact_accuracy` may show a single-example dip. The original (protected,
+byte-for-byte) dataset's "Your offer from Eta Ltd" example has `expected.company ==
+"Eta"` — a known, already-documented Phase 4b compromise (today's code can't match this
+phrasing via any template, so it fell back to the domain-derived guess). Task 7's new
+`_COMPANY_PLEASED_TO_OFFER_RE` template *does* match this example's body ("Eta Ltd is
+pleased to extend an offer..."), correctly extracting the fuller `"Eta Ltd"` — which is
+actually the *more* correct answer, just not equal to the frozen `"Eta"` ground truth.
+Since the original 18 examples must stay byte-for-byte unchanged (Global Constraints),
+do not edit this example's expected value — accept the metric showing `"Eta Ltd" !=
+"Eta"` as a exact-match miss here. This is a one-example, direction-correct wobble, not
+a real regression; do not attempt to "fix" it by weakening the new template.
 
 - [ ] **Step 8: Commit**
 
