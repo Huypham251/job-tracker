@@ -1666,7 +1666,7 @@ STATUS_PATTERNS: dict[str, list[tuple[str, int]]] = {
         (r"hackerrank|codesignal", 3),
         (r"take.?home (?:assignment|test|challenge)", 2),
         (r"technical assessment", 2),
-        (r"skills assessment", 2),
+        (r"skills assessment", 3),
     ],
     "interview": [
         (r"invite you to interview", 3),
@@ -1691,7 +1691,7 @@ STATUS_PATTERNS: dict[str, list[tuple[str, int]]] = {
         (r"offer of employment", 3),
         (r"extend(?:ing)? (?:you )?an offer", 3),
         (r"job offer", 2),
-        (r"(?:thrilled|excited) to (?:offer|welcome you|bring you on board)", 2),
+        (r"(?:thrilled|excited) to (?:offer|welcome you|bring you on board)", 3),
     ],
 }
 ```
@@ -1699,6 +1699,23 @@ STATUS_PATTERNS: dict[str, list[tuple[str, int]]] = {
 (Only the `extend(?:ing)? an offer` entry is *changed* in place, to
 `extend(?:ing)? (?:you )?an offer` — every other line above is either unchanged or new,
 shown in full so the file's exact final state is unambiguous.)
+
+**Weight correction found during Task 9 pre-flight verification** (before Task 9 was
+dispatched, simulating the full classify()/threshold pipeline — not just isolated regex
+matches — against the real 88-example dataset): `skills assessment` and `(?:thrilled|
+excited) to (?:offer|welcome you|bring you on board)` are weighted `3`, not `2` as an
+earlier draft of this plan had them. Both are each the *only* signal in their target
+example (Lumen Financial's "skills assessment for the Financial Analyst **role**" has
+no `\bposition\b`/`your application`/`\bcandidates?\b` GENERIC hit since it says "role,"
+not "position"; Outpost Aerospace's "thrilled to bring you on board" has no other
+GENERIC hit either) — at weight 2 alone, `job_signal` only reaches 2, one short of
+`JOB_RELATED_THRESHOLD` (3), so both examples would still wrongly classify as
+`is_job_related=false` even with the pattern "matching." Weight 3 matches the existing
+convention every other unambiguous, single-signal-sufficient phrase in this table already
+uses (`thank you for applying`, `invite you to interview`, `regret to inform`, `pleased
+to offer`, etc. are all `3`) — `2` is reserved for genuinely weaker/corroborating
+signals that were always expected to need company. Verified by re-running the full
+simulation at weight 3: both examples now correctly classify, with the correct status.
 
 Update `GENERIC_JOB_PATTERNS`:
 
@@ -1737,10 +1754,34 @@ Run: `cd backend && uv run python -m evaluation.compare`
 Expected: per-status precision/recall/F1 improve, especially `applied`/`interview`/
 `rejected`/`offer`; `recruiter_outreach`'s category `is_job_related` F1 goes from ~0 to
 ~1.0 (this is the category whose examples were entirely unclassifiable before this
-task, per the `\bopening\b`/`\bopportunity\b` weighting above); no `REGRESSION` marker
-on any tracked metric. Also re-check the `ambiguous` category specifically —
-confirm its `is_job_related` precision/recall didn't drop (that's the check that the
-new `\bopening\b`/`\bopportunity\b` patterns didn't introduce false positives there).
+task, per the `\bopening\b`/`\bopportunity\b` weighting above); `messy_phrasing`'s
+category `is_job_related` F1 also improves (was partial — some of its 10 examples
+needed this task's other new patterns too). No `REGRESSION` marker on any tracked
+metric.
+
+Two things NOT to chase here, both understood and out of this task's scope:
+
+1. The `ambiguous` category's `is_job_related` precision/recall/F1 will read as `0.0`
+   both before and after this task, regardless of classifier quality — it has zero
+   expected-positive examples by design (every one of its 10 examples is
+   `is_job_related: false`), so precision/recall/F1 for the *positive* class are always
+   `0`-by-convention when there's nothing positive to measure against (a `_safe_div`
+   `0/0` case). The real signal for this category is `classification_accuracy`, not
+   `is_job_related` precision/recall/F1 — check that instead if you want to confirm the
+   new `\bopening\b`/`\bopportunity\b` patterns didn't introduce a new false positive
+   (neither phrase appears in any `ambiguous` example's body, so they shouldn't).
+2. One `ambiguous` example (sender `community@devmeetup.com`, "Meetup: Hiring managers
+   panel...") is *already* a false positive (`is_job_related=true` when it should be
+   `false`) before this task ever runs — driven entirely by the pre-existing, unchanged
+   `interview (?:invitation|process)` pattern matching "interview process" plus the
+   pre-existing `\bcandidates?\b` GENERIC pattern matching "candidates," neither of
+   which this task touches. This is a real, known gap in the *original* Phase 4b
+   patterns, exposed by this dataset's deliberately-harder `ambiguous` examples working
+   as intended — not something this task introduced or is scoped to fix (fixing it
+   would mean reweighting or adding a negative pattern for an *existing*, unrelated
+   phrase, which no specific new dataset example in this task motivates). It's noted
+   here so it isn't mistaken for a regression this task caused; Task 11's final report
+   records it as a known, accepted gap.
 
 - [ ] **Step 6: Commit**
 
