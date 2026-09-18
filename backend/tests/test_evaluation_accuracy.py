@@ -95,3 +95,14 @@ def test_classification_accuracy_meets_minimum_bar() -> None:
             f"{field} accuracy {accuracy:.2f} fell below the {min_accuracy} bar "
             f"({correct}/{total} correct)"
         )
+
+
+def test_confidence_threshold_constant_matches_settings() -> None:
+    """evaluation/run_eval.py.CONFIDENCE_THRESHOLD is a deliberate duplicate of
+    settings.classification_confidence_threshold (see run_eval.py's comment for why it
+    isn't imported directly). This test is what keeps the two from silently drifting
+    apart if one is ever changed without the other."""
+    from app.core.config import settings
+    from evaluation.run_eval import CONFIDENCE_THRESHOLD
+
+    assert CONFIDENCE_THRESHOLD == settings.classification_confidence_threshold

@@ -1,0 +1,395 @@
+{
+  "overall": {
+    "n": 88,
+    "classification_accuracy": 0.761,
+    "is_job_related": {
+      "precision": 0.981,
+      "recall": 0.722,
+      "f1": 0.832,
+      "tp": 52,
+      "fp": 1,
+      "fn": 20,
+      "tn": 15
+    },
+    "per_status": {
+      "applied": {
+        "precision": 1.0,
+        "recall": 0.824,
+        "f1": 0.903
+      },
+      "oa": {
+        "precision": 1.0,
+        "recall": 0.909,
+        "f1": 0.952
+      },
+      "interview": {
+        "precision": 1.0,
+        "recall": 0.833,
+        "f1": 0.909
+      },
+      "rejected": {
+        "precision": 1.0,
+        "recall": 0.818,
+        "f1": 0.9
+      },
+      "offer": {
+        "precision": 1.0,
+        "recall": 0.818,
+        "f1": 0.9
+      },
+      "other": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      }
+    },
+    "status_accuracy": 0.722,
+    "company_exact_accuracy": 0.444,
+    "company_fuzzy_accuracy": 0.472,
+    "position_exact_accuracy": 0.692,
+    "position_fuzzy_accuracy": 0.692,
+    "precision_at_threshold": 0.828,
+    "auto_apply_rate": 0.403,
+    "review_rate": 0.333
+  },
+  "by_category": {
+    "clean_template": {
+      "n": 18,
+      "classification_accuracy": 1.0,
+      "is_job_related": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "tn": 6
+      },
+      "per_status": {
+        "applied": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "oa": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "interview": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "rejected": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "offer": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "status_accuracy": 1.0,
+      "company_exact_accuracy": 0.917,
+      "company_fuzzy_accuracy": 0.917,
+      "position_exact_accuracy": 1.0,
+      "position_fuzzy_accuracy": 1.0,
+      "precision_at_threshold": 1.0,
+      "auto_apply_rate": 0.583,
+      "review_rate": 0.417
+    },
+    "html_noise": {
+      "n": 10,
+      "classification_accuracy": 1.0,
+      "is_job_related": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 10,
+        "fp": 0,
+        "fn": 0,
+        "tn": 0
+      },
+      "per_status": {
+        "applied": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "oa": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "interview": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "rejected": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "offer": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "status_accuracy": 1.0,
+      "company_exact_accuracy": 0.8,
+      "company_fuzzy_accuracy": 0.9,
+      "position_exact_accuracy": 1.0,
+      "position_fuzzy_accuracy": 1.0,
+      "precision_at_threshold": 1.0,
+      "auto_apply_rate": 0.6,
+      "review_rate": 0.4
+    },
+    "greeting_adjacent": {
+      "n": 10,
+      "classification_accuracy": 1.0,
+      "is_job_related": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 10,
+        "fp": 0,
+        "fn": 0,
+        "tn": 0
+      },
+      "per_status": {
+        "applied": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "oa": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "interview": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "rejected": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "offer": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "status_accuracy": 1.0,
+      "company_exact_accuracy": 0.1,
+      "company_fuzzy_accuracy": 0.1,
+      "position_exact_accuracy": 1.0,
+      "position_fuzzy_accuracy": 1.0,
+      "precision_at_threshold": 0.167,
+      "auto_apply_rate": 0.6,
+      "review_rate": 0.4
+    },
+    "signature_footer": {
+      "n": 10,
+      "classification_accuracy": 1.0,
+      "is_job_related": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 10,
+        "fp": 0,
+        "fn": 0,
+        "tn": 0
+      },
+      "per_status": {
+        "applied": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "oa": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "interview": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "rejected": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "offer": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "status_accuracy": 1.0,
+      "company_exact_accuracy": 0.9,
+      "company_fuzzy_accuracy": 1.0,
+      "position_exact_accuracy": 1.0,
+      "position_fuzzy_accuracy": 1.0,
+      "precision_at_threshold": 1.0,
+      "auto_apply_rate": 0.7,
+      "review_rate": 0.3
+    },
+    "recruiter_outreach": {
+      "n": 10,
+      "classification_accuracy": 0.0,
+      "is_job_related": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "tp": 0,
+        "fp": 0,
+        "fn": 10,
+        "tn": 0
+      },
+      "per_status": {
+        "other": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "status_accuracy": 0.0,
+      "company_exact_accuracy": 0.0,
+      "company_fuzzy_accuracy": 0.0,
+      "position_exact_accuracy": 0.0,
+      "position_fuzzy_accuracy": 0.0,
+      "precision_at_threshold": 0.0,
+      "auto_apply_rate": 0.0,
+      "review_rate": 0.0
+    },
+    "ambiguous": {
+      "n": 10,
+      "classification_accuracy": 0.9,
+      "is_job_related": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "tn": 9
+      },
+      "per_status": {},
+      "status_accuracy": 0.0,
+      "company_exact_accuracy": 0.0,
+      "company_fuzzy_accuracy": 0.0,
+      "position_exact_accuracy": 0.0,
+      "position_fuzzy_accuracy": 0.0,
+      "precision_at_threshold": 0.0,
+      "auto_apply_rate": 0.0,
+      "review_rate": 0.0
+    },
+    "sender_variation": {
+      "n": 10,
+      "classification_accuracy": 1.0,
+      "is_job_related": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 10,
+        "fp": 0,
+        "fn": 0,
+        "tn": 0
+      },
+      "per_status": {
+        "applied": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "oa": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "interview": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "rejected": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "offer": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "status_accuracy": 1.0,
+      "company_exact_accuracy": 0.3,
+      "company_fuzzy_accuracy": 0.3,
+      "position_exact_accuracy": 1.0,
+      "position_fuzzy_accuracy": 1.0,
+      "precision_at_threshold": 1.0,
+      "auto_apply_rate": 0.3,
+      "review_rate": 0.7
+    },
+    "messy_phrasing": {
+      "n": 10,
+      "classification_accuracy": 0.0,
+      "is_job_related": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "tp": 0,
+        "fp": 0,
+        "fn": 10,
+        "tn": 0
+      },
+      "per_status": {
+        "applied": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "oa": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "interview": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "rejected": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "offer": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "status_accuracy": 0.0,
+      "company_exact_accuracy": 0.0,
+      "company_fuzzy_accuracy": 0.0,
+      "position_exact_accuracy": 0.0,
+      "position_fuzzy_accuracy": 0.0,
+      "precision_at_threshold": 0.0,
+      "auto_apply_rate": 0.0,
+      "review_rate": 0.0
+    }
+  }
+}
