@@ -6,10 +6,11 @@ under `docs/superpowers/plans/` remain the source of truth for what was decided 
 
 ## Status
 
-Phases 1–6 are complete, merged to `main`. Phase 5 was manually verified end-to-end
+Phases 1–6 are complete and merged to `main`. Phase 7 (classifier extraction fixes) is
+implemented and verified on a feature branch, pending merge. Phase 5 was manually verified end-to-end
 against a real Gmail account (2026-09-17) — see "Manual testing findings" below — and
 Phase 6 was manually verified the same way (2026-09-20) — see "Phase 6 manual testing
-findings" below. Backend: 274/274 tests passing. Frontend:
+findings" below. Backend: 279/279 tests passing. Frontend:
 `tsc -b` clean, `oxlint` clean (0 errors, 3 pre-existing warnings in
 `AuthContext.tsx`/`useApplications.ts`, unrelated to any phase and not touched by any of
 them). Working tree clean, no uncommitted changes.
@@ -32,6 +33,10 @@ them). Working tree clean, no uncommitted changes.
   normalization); extraction fixes (greeting-bleed trim, broadened templates,
   subdomain/assessment-platform gaps); status-pattern coverage; measured confidence
   recalibration. See "Phase 6 results" below.
+- Phase 7: three targeted classifier extraction fixes found during Phase 6 manual
+  testing (apex-domain company resolution for a leading-ATS-subdomain sender,
+  pipe-delimited/longer position titles, newsletter/meetup false positives), plus
+  three new evaluation-dataset examples covering the gaps. See "Phase 7 results" below.
 
 **Read `2026-09-15-job-tracker-phase-4-pipeline-design.md` for the pipeline architecture
 that's still current (matching, trust model, DB schema, `/pipeline/review*` API,
@@ -404,6 +409,53 @@ item (a TikTok email) showed company="Careers" from an old run; re-running its e
 subject/sender through current code gives "Tiktok" correctly — already fixed, just
 stale data. Don't infer a live bug from an old queue row without re-running it through
 current code first.
+
+## Phase 7 results (2026-09-20)
+
+Three targeted classifier extraction fixes, found during Phase 6's manual testing
+against a real Gmail account (see "Two more real extraction gaps found, not fixed this
+session" and the "hiring managers panel" false-positive note above) and formalized in
+`docs/superpowers/specs/2026-09-20-job-tracker-phase-7-classifier-extraction-fixes-design.md`
+and the accompanying plan. Evaluation dataset grew from 88 to 91 examples (three new
+cases added up front, each verified to reproduce its bug before the corresponding fix
+landed). Measured with `evaluation/baseline_metrics.json` (Phase 6's frozen baseline,
+unchanged) as the "before" column and `uv run python -m evaluation.compare`'s final
+output as "after":
+
+| metric | before | after |
+|---|---|---|
+| classification_accuracy | 0.761 | 1.0 |
+| status_accuracy | 0.722 | 1.0 |
+| company_exact_accuracy | 0.444 | 0.865 |
+| position_exact_accuracy | 0.692 | 0.955 |
+| precision_at_threshold | 0.828 | 1.0 |
+| auto_apply_rate | 0.403 | 0.419 |
+
+Each fix is covered by both a dataset example and a direct regression test, not just
+the aggregate numbers above:
+- **`fix(classifier): resolve the apex domain when an ATS platform name is a leading
+  subdomain`** — covered by the new `Verisk`/`oraclecloud.verisk.com` dataset example
+  and by `test_find_company_prefers_the_apex_domain_over_an_oraclecloud_subdomain` in
+  `tests/test_classifier_fields.py` (alongside a companion test confirming the existing
+  Workday-tenant-subdomain behavior was left intact).
+- **`fix(classifier): allow pipe-delimited, up-to-8-word position titles`** — covered by
+  the new Solstice Robotics dataset example (`"Mechanical Engineer | 2027 Summer
+  Internship Program"`) and by `test_find_position_captures_a_pipe_delimited_title` in
+  `tests/test_classifier_fields.py`.
+- **`fix(classifier): suppress newsletter and meetup false positives`** — covered by the
+  new Riverside Neighbors newsletter dataset example plus the pre-existing "Meetup:
+  Hiring managers panel this Thursday" example (already in the dataset, previously
+  mismatched), and by two direct regression tests in `tests/test_classifier_patterns.py`:
+  `test_negative_patterns_suppress_a_newsletter_with_incidental_job_language` and
+  `test_negative_patterns_suppress_a_meetup_style_false_positive`.
+
+**Deliberate deviation from the written spec**: the spec's speculative `\bpanel\b`
+negative pattern (design §2.4) was not added. Direct verification against the actual
+dataset before implementing the newsletter/meetup fix showed only `\bmeetup\b` was
+needed to fix the one real failing case, and adding `\bpanel\b` would risk suppressing a
+legitimate "panel interview" scheduling email that a real candidate might receive — an
+evidence-based narrowing of the spec, not an oversight, documented at the point it
+happened (the plan's Task 4).
 
 ## Local dev environment (this machine)
 

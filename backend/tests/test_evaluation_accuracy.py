@@ -11,22 +11,24 @@ per-category breakdowns) that a second hand-rolled copy would drift.
 Every bar below is set to genuinely tolerate one additional miss beyond the dataset's
 current numbers (not just barely clear them) — see evaluate()'s docstring in
 run_eval.py for the metric definitions, and docs/superpowers/plans/
-2026-09-17-job-tracker-phase-6-classifier-quality.md Task 11 for the exact procedure
-used to pick these values from a real `uv run python -m evaluation.run_eval` run
-against the 88-example dataset (18 original clean_template examples + 70 added across
-html_noise, greeting_adjacent, signature_footer, recruiter_outreach, ambiguous,
-sender_variation, and messy_phrasing).
+2026-09-17-job-tracker-phase-6-classifier-quality.md Task 11 and
+.superpowers/sdd/2026-09-20-job-tracker-phase-7-classifier-extraction-fixes/ Task 5 for
+the exact procedure used to pick these values from a real
+`uv run python -m evaluation.run_eval` run against the 91-example dataset (18 original
+clean_template examples + 70 added in Phase 6 across html_noise, greeting_adjacent,
+signature_footer, recruiter_outreach, ambiguous, sender_variation, and messy_phrasing,
+plus 3 more added in Phase 7 across ambiguous/sender_variation/messy_phrasing).
 """
 
 from app.classifier.extractor import RuleBasedExtractor
 from evaluation.run_eval import CONFIDENCE_THRESHOLD, evaluate, load_dataset
 
-MIN_CLASSIFICATION_ACCURACY = 0.97  # currently 87/88=0.989; tolerates 86/88=0.977; fails at 85/88=0.966
-MIN_STATUS_ACCURACY = 0.98  # currently 72/72=1.0; tolerates 71/72=0.986; fails at 70/72=0.972
-MIN_COMPANY_ACCURACY = 0.84  # exact-match, same as Phase 4b (not fuzzy); currently 62/72=0.861; tolerates 61/72=0.847; fails at 60/72=0.833
-MIN_POSITION_ACCURACY = 0.93  # exact-match, same as Phase 4b (not fuzzy); currently 62/65=0.954; tolerates 61/65=0.938; fails at 60/65=0.923
+MIN_CLASSIFICATION_ACCURACY = 0.98  # currently 91/91=1.0; tolerates 90/91=0.989; fails at 89/91=0.978
+MIN_STATUS_ACCURACY = 0.98  # currently 73/73=1.0; tolerates 72/73=0.986; fails at 71/73=0.973
+MIN_COMPANY_ACCURACY = 0.84  # exact-match, same as Phase 4b/6 (not fuzzy); currently 64/74=0.865; tolerates 63/74=0.851; fails at 62/74=0.838
+MIN_POSITION_ACCURACY = 0.93  # exact-match, same as Phase 4b/6 (not fuzzy); currently 64/67=0.955; tolerates 63/67=0.940; fails at 62/67=0.925
 MIN_PRECISION_AT_THRESHOLD = 0.96  # guards real auto-applies — the most important bar; currently 31/31=1.0; tolerates 30/31=0.968; fails at 29/31=0.935
-MIN_AUTO_APPLY_RATE = 0.41  # a floor: confirms the final whole-branch-review fix didn't silently regress; currently 31/72=0.431; tolerates 30/72=0.417; fails at 29/72=0.403
+MIN_AUTO_APPLY_RATE = 0.40  # a floor: confirms Phase 7's fixes didn't silently regress this; currently 31/74=0.419; tolerates 30/74=0.405; fails at 29/74=0.392
 
 
 def test_classification_accuracy_meets_minimum_bar() -> None:
