@@ -64,6 +64,28 @@ NEGATIVE_PATTERNS: list[tuple[str, int]] = [
     (r"unsubscribe", 2),
     (r"view (?:this|in) browser", 2),
     (r"%\s*off", 2),
+    # Both found via real Phase 6 manual-testing/eval-dataset false positives, both
+    # weighted to just clear the two known real cases (job_signal=4 in each) without
+    # touching the interview/opening/opportunity positive patterns those cases also
+    # trip — see the Phase 7 spec §2.3/§2.4 for why the positive patterns themselves
+    # are out of scope.
+    #
+    # "newsletter" is anchored to the first ~60 characters (Phase 7 whole-branch
+    # review, Finding 2), not matched anywhere in the text: text.combine_subject_body
+    # always puts the subject first, so a genuine newsletter names itself in its own
+    # subject line (e.g. "DNDA September Newsletter: A New Destination", or the
+    # dataset's "Your weekly career newsletter") within the first few words. An
+    # unanchored match instead let a routine footer mention — "you can unsubscribe
+    # from our newsletter at any time", hundreds of characters into an otherwise
+    # genuine job email's body — stack additively with the `unsubscribe` pattern
+    # above (2+2=4) and flip a real job-related message to a false negative, which
+    # under this app's idempotency model (each message classified at most once,
+    # ever) is silently dropped forever — strictly worse than the review-queue noise
+    # this pattern exists to fix. `meetup` has no equivalent evidenced footer
+    # collision (a "meetup" mention is not a routine transactional-email footer
+    # phrase the way "unsubscribe"/"newsletter" are), so it's left unanchored.
+    (r"^.{0,60}\bnewsletter\b", 2),
+    (r"\bmeetup\b", 2),
 ]
 
 ATS_DOMAINS: frozenset[str] = frozenset(

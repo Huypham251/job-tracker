@@ -125,3 +125,52 @@ def test_generic_job_patterns_match_opening_and_opportunity() -> None:
     text = "i think you'd be a great fit for the senior mechanical engineer opening at pinnacle robotics"
     _, job_signal, _ = classify(text, "")
     assert job_signal >= JOB_RELATED_THRESHOLD
+
+
+def test_negative_patterns_suppress_a_newsletter_with_incidental_job_language() -> None:
+    # Real DNDA community-newsletter email found during Phase 6 manual testing: a
+    # multi-topic digest with an unrelated "position"/"opportunity" mention (a
+    # volunteer opportunity, not a job) crosses JOB_RELATED_THRESHOLD on generic
+    # patterns alone. The subject line contains "Newsletter" literally.
+    text = (
+        "riverside neighbors september newsletter plus: our fall cleanup day, a new "
+        "mural unveiling, and how to join the tenant council. now hiring: community "
+        "outreach coordinator. this position will support neighborhood events. also, "
+        "join us for an opportunity to volunteer at the community garden this weekend."
+    )
+    _, job_signal, negative_signal = classify(text, "riversideneighbors.org")
+    assert job_signal - negative_signal < JOB_RELATED_THRESHOLD
+
+
+def test_negative_patterns_do_not_suppress_a_job_email_with_a_newsletter_footer_mention() -> None:
+    # Regression case for the Phase 7 whole-branch review, Finding 2: the unanchored
+    # `\bnewsletter\b` negative pattern stacked additively with `unsubscribe` (2+2=4)
+    # and could flip a genuine job-related email to a false negative purely because
+    # of a routine, far-into-the-body footer mention ("you can unsubscribe from our
+    # newsletter at any time") that has nothing to do with the email's actual
+    # subject. Anchoring the pattern to the first ~60 characters (where a subject
+    # line lives, per text.combine_subject_body's subject-first join) fixes this
+    # without weakening the pattern's original real-newsletter-detection purpose —
+    # see test_negative_patterns_suppress_a_newsletter_with_incidental_job_language
+    # above, which still passes.
+    body = (
+        "we are pleased to offer you the job offer for the position. "
+        + ("lorem ipsum filler text padding out the body so the footer is far away. " * 5)
+        + "you can unsubscribe from our newsletter at any time."
+    )
+    _, job_signal, negative_signal = classify(body.lower(), "")
+    assert job_signal - negative_signal >= JOB_RELATED_THRESHOLD
+
+
+def test_negative_patterns_suppress_a_meetup_style_false_positive() -> None:
+    # Real gap already present in evaluation/dataset.jsonl (the "Meetup: Hiring
+    # managers panel this Thursday" example) — third-person, broadcast-style framing
+    # about hiring as a topic, not a candidate-directed message, trips
+    # "interview (?:invitation|process)" plus the generic "\bcandidates?\b" booster.
+    text = (
+        "meetup: hiring managers panel this thursday come hear from hiring managers "
+        "about what they look for in candidates and how the interview process works "
+        "at their companies. free pizza provided."
+    )
+    _, job_signal, negative_signal = classify(text, "devmeetup.com")
+    assert job_signal - negative_signal < JOB_RELATED_THRESHOLD

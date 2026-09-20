@@ -7,6 +7,21 @@ _DISPLAY_NAME_RE = re.compile(r'^\s*"?([^"<]*?)"?\s*<')
 _SUBDOMAIN_PREFIXES = (
     "mail.", "notifications.", "e.", "no-reply.", "noreply.",
     "careers.", "jobs.", "talent.", "recruiting.",
+    # Handles the one evidenced shape only: a two-label sender domain
+    # "oraclecloud.<company>.com" where the ATS/HCM platform name is the LEADING
+    # subdomain of the real employer's own domain (the opposite shape from a tenant
+    # subdomain like acme.myworkday.com, where the first label IS the company — see
+    # test_find_company_still_treats_workday_tenant_subdomain_as_the_company).
+    # Evidenced by a real Verisk email during Phase 6 manual testing:
+    # oraclecloud.verisk.com must resolve to "verisk", not "oraclecloud". This does
+    # NOT handle the broader, more common Oracle Fusion HCM tenant-subdomain shape
+    # (e.g. "tenant.fa.us2.oraclecloud.com", where "oraclecloud.com" is itself the
+    # platform's own base domain and the tenant/company name is further to the
+    # left) — that pattern still resolves incorrectly today. Fixing it would need a
+    # different rule (recognizing "oraclecloud.com" as a platform base domain, not
+    # stripping a leading label from it), out of scope here for lack of real
+    # evidence beyond this one case.
+    "oraclecloud.",
 )
 _WHITESPACE_RE = re.compile(r"\s+")
 

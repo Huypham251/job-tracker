@@ -168,6 +168,27 @@ def test_find_company_does_not_treat_non_ats_assessment_platform_as_the_company(
     assert tier == "none"
 
 
+def test_find_company_prefers_the_apex_domain_over_an_oraclecloud_subdomain() -> None:
+    # Real Verisk rejection email found during Phase 6 manual testing: the sender
+    # domain is "oraclecloud.verisk.com" — Verisk's own domain, verisk.com, fronted by
+    # an "oraclecloud" ATS subdomain label. Before this fix, the first label
+    # ("oraclecloud", the platform) was extracted instead of the real employer.
+    company, tier = find_company("no template match here", "TalentAcquisition@oraclecloud.verisk.com")
+    assert company == "Verisk"
+    assert tier == "domain"
+
+
+def test_find_company_still_treats_workday_tenant_subdomain_as_the_company() -> None:
+    # Guards against a general "always prefer the label before the TLD" fix, which
+    # would break this opposite, already-correct pattern: here the FIRST label
+    # ("acme") is the real company and the platform is the base domain — the reverse
+    # of the oraclecloud.verisk.com shape above. The fix must stay a specific,
+    # evidenced label addition (oraclecloud.), not a positional rule.
+    company, tier = find_company("no template match here", "notify@acme.myworkday.com")
+    assert company == "Acme"
+    assert tier == "domain"
+
+
 def test_find_company_falls_back_to_display_name_for_hirevue_interview_invites() -> None:
     # HireVue is an interview/assessment platform, same category as hackerrank.com,
     # codesignal.com, testgorilla.com, codility.com (already in ATS_DOMAINS) — found
@@ -194,4 +215,34 @@ def test_find_position_matches_as_your_new_template() -> None:
     text = "We're excited to welcome you as your new Machine Learning Engineer."
     position, tier = find_position(text, "hr@meridianlabs.ai")
     assert position == "Machine Learning Engineer"
+    assert tier == "template"
+
+
+def test_find_position_does_not_capture_a_lowercase_filler_clause() -> None:
+    # Regression case for the Phase 7 whole-branch review, Finding 1: widening
+    # _POSITION_TOKEN's word cap from 6 to 8 (to fit a real pipe-delimited title,
+    # see test_find_position_captures_a_pipe_delimited_title below) reopened the
+    # overcapture bug this file's own comments warn about, for 7-8 word filler
+    # spans specifically. Before the capitalized-first-word guard, this matched
+    # "time you took to apply for the Analyst" (garbage, tier="template", zero
+    # confidence penalty) instead of just "Analyst".
+    text = "Thank you for the time you took to apply for the Analyst role at Acme."
+    position, tier = find_position(text, "hr@acme.com")
+    assert position == "Analyst"
+    assert tier == "template"
+
+
+def test_find_position_captures_a_pipe_delimited_title() -> None:
+    # Real Verisk email found during Phase 6 manual testing: "Tech Intern | 2027
+    # Summer Internship Program" fails today for two independent reasons — "|" isn't
+    # in _POSITION_TOKEN's allowed characters, and the title is 7 words against the
+    # then-6-word cap. Uses a different (Solstice Robotics) example here to isolate
+    # position extraction from the company-extraction fix in Task 2.
+    text = (
+        "Thank you for applying to Solstice Robotics. We would like you to complete "
+        "an online assessment for the Mechanical Engineer | 2027 Summer Internship "
+        "Program role before the deadline."
+    )
+    position, tier = find_position(text, "careers@solsticerobotics.com")
+    assert position == "Mechanical Engineer | 2027 Summer Internship Program"
     assert tier == "template"
