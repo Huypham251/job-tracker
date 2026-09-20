@@ -216,3 +216,19 @@ def test_find_position_matches_as_your_new_template() -> None:
     position, tier = find_position(text, "hr@meridianlabs.ai")
     assert position == "Machine Learning Engineer"
     assert tier == "template"
+
+
+def test_find_position_captures_a_pipe_delimited_title() -> None:
+    # Real Verisk email found during Phase 6 manual testing: "Tech Intern | 2027
+    # Summer Internship Program" fails today for two independent reasons — "|" isn't
+    # in _POSITION_TOKEN's allowed characters, and the title is 7 words against the
+    # then-6-word cap. Uses a different (Solstice Robotics) example here to isolate
+    # position extraction from the company-extraction fix in Task 2.
+    text = (
+        "Thank you for applying to Solstice Robotics. We would like you to complete "
+        "an online assessment for the Mechanical Engineer | 2027 Summer Internship "
+        "Program role before the deadline."
+    )
+    position, tier = find_position(text, "careers@solsticerobotics.com")
+    assert position == "Mechanical Engineer | 2027 Summer Internship Program"
+    assert tier == "template"

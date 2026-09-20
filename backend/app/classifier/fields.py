@@ -50,7 +50,11 @@ _COMPANY_BOUNDARY = r"(?=\s*[.,!]|\s+(?:for|and|regarding|about|which|who)\b|\s*
 # `/` and `+` are included (alongside the word/company token's other allowed
 # punctuation) since real titles like "Software Engineer II" or
 # "Full-Stack/Backend" use them.
-_POSITION_TOKEN = r"[\w&'/+\-]+(?:\s[\w&'/+\-]+){0,5}"
+# `|` is also included (Phase 7): real titles like "Tech Intern | 2027 Summer
+# Internship Program" use it as a separator, and the word cap was raised from 6 to 8
+# to fit such titles — still bounded, not unbounded, so the overcapture risk this
+# comment describes above doesn't reopen.
+_POSITION_TOKEN = r"[\w&'/+|\-]+(?:\s[\w&'/+|\-]+){0,7}"
 
 # "you" added to the leading-verb alternation (Task 8 calibration): offer
 # emails commonly phrase this as "pleased to offer you the X position at Y"
