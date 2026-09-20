@@ -86,6 +86,7 @@ ATS_DOMAINS: frozenset[str] = frozenset(
         "codesignal.com",
         "testgorilla.com",
         "codility.com",
+        "hirevue.com",
     }
 )
 

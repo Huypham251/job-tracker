@@ -168,6 +168,21 @@ def test_find_company_does_not_treat_non_ats_assessment_platform_as_the_company(
     assert tier == "none"
 
 
+def test_find_company_falls_back_to_display_name_for_hirevue_interview_invites() -> None:
+    # HireVue is an interview/assessment platform, same category as hackerrank.com,
+    # codesignal.com, testgorilla.com, codility.com (already in ATS_DOMAINS) — found
+    # via a real "Interview with Nike, Inc." email during Phase 6 manual testing that
+    # was extracting company="Hirevue" instead of the actual employer.
+    text = (
+        "INTERVIEW WITH Nike, Inc. Dear Huy Pham, CONGRATULATIONS! You are one step "
+        "closer to joining a winning team committed to moving the world forward "
+        "through the power of sport. Every job at NIKE, Inc. is"
+    )
+    company, tier = find_company(text, '"Nike, Inc." <interviews@hirevue.com>')
+    assert company == "Nike, Inc."
+    assert tier == "display_name"
+
+
 def test_find_position_matches_as_our_new_template() -> None:
     text = "Outpost Aerospace is thrilled to bring you on board as our new Systems Engineer."
     position, tier = find_position(text, "hr@outpostaerospace.com")

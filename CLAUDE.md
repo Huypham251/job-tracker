@@ -6,9 +6,10 @@ under `docs/superpowers/plans/` remain the source of truth for what was decided 
 
 ## Status
 
-Phases 1–6 are complete, merged to `main`, and Phase 5 was manually verified end-to-end
-against a real Gmail account (2026-09-17) — see "Manual testing findings" below. Backend: 273/273
-tests passing. Frontend:
+Phases 1–6 are complete, merged to `main`. Phase 5 was manually verified end-to-end
+against a real Gmail account (2026-09-17) — see "Manual testing findings" below — and
+Phase 6 was manually verified the same way (2026-09-20) — see "Phase 6 manual testing
+findings" below. Backend: 274/274 tests passing. Frontend:
 `tsc -b` clean, `oxlint` clean (0 errors, 3 pre-existing warnings in
 `AuthContext.tsx`/`useApplications.ts`, unrelated to any phase and not touched by any of
 them). Working tree clean, no uncommitted changes.
@@ -207,6 +208,27 @@ sourced (paginated, bounded, resumable instead of a flat top-20 fetch).
 - **Sync duration is bounded by date window, not message count — confirmed real, not
   just theoretical.** See "Manual testing findings" below: a real mailbox's initial sync
   took 1h43m. Noted as a recommendation in Phase 5's final review, not fixed.
+- **Compound-subdomain ATS platforms still produce a wrong domain-derived company.**
+  `ATS_DOMAINS` (`classifier/patterns.py`) blocks a platform when the sender's domain
+  *is* the platform (e.g. `hackerrank.com` — and, since Phase 6 manual testing,
+  `hirevue.com`, added after it was found extracting company="Hirevue" for a real "
+  Interview with Nike, Inc." email). It does not help when the platform name is a
+  *subdomain* of the real employer's own domain instead — a real Verisk rejection email
+  from `TalentAcquisition@oraclecloud.verisk.com` extracted company="Oraclecloud" (the
+  ATS subdomain) instead of "Verisk" (the actual apex domain). `extract_sender_domain`
+  (`classifier/text.py`) only strips a fixed list of generic prefixes
+  (`mail.`/`careers.`/`talent.`/etc.); `oraclecloud.` isn't one, and adding it wouldn't
+  generalize (unlike `careers.`/`talent.`, "oraclecloud" is a specific vendor name, not
+  a generic email-infra label). Not fixed — a general fix (e.g., preferring the label
+  before the TLD when the domain has 3+ labels) needs verification against real
+  multi-label domains that are legitimately the whole company name (not just
+  subdomain+company) before it's safe to add.
+- **Position extraction can't capture a title containing `|`.** `_POSITION_TOKEN`
+  (`classifier/fields.py`) allows `[\w&'/+\-]` per word — no pipe — so a real title like
+  "Tech Intern | 2027 Summer Internship Program" (from the same Verisk email above)
+  fails to extract regardless of the subdomain issue; that title is also 7 words, over
+  the 6-word cap, so widening the character class alone wouldn't be enough. Found during
+  Phase 6 manual testing, not fixed.
 
 ## Manual testing findings (2026-09-17)
 
@@ -317,6 +339,71 @@ not fixed this phase**:
   classification to work at all), but real mail beyond this evaluation dataset
   (marketing "grand opening" emails, generic biz-dev "opportunity" outreach) could
   trigger false positives these 88 examples don't exercise.
+
+## Phase 6 manual testing findings (2026-09-20)
+
+Validated the Phase 6 classifier changes against the same real Gmail account used for
+Phase 5's manual testing (backend, frontend, and worker all restarted fresh on today's
+code; migrations confirmed at head first). Went in specifically to check whether the
+real-mailbox weaknesses that motivated Phase 6 (see Phase 5's "Also observed" note
+above) actually improved, not just the curated evaluation dataset.
+
+**The original motivating bug is fixed, confirmed against the exact real email that
+found it.** The Phase 5 finding was company extraction contaminated with greeting text
+("Anduril Hi Gia Huy" instead of "Anduril") on a real Anduril rejection email, still
+sitting in this mailbox's processed-message history. Re-running that exact
+subject/body/sender through today's classifier gives company="Anduril" (tier
+"template") and position="2027 Software Engineer Intern" (tier "template") — both
+clean. This is the direct, real-world confirmation the curated-dataset eval numbers
+alone couldn't provide.
+
+**New real bug found and fixed this session**: a real "Interview with Nike, Inc." email
+sent via HireVue extracted company="Hirevue" (the interview platform) instead of "Nike,
+Inc." (the actual employer) — the exact failure category Phase 6 already blocklisted
+`hackerrank.com`/`codesignal.com`/`testgorilla.com`/`codility.com` for, just missing
+`hirevue.com` itself. Fixed by adding it to `ATS_DOMAINS`
+(`classifier/patterns.py`) — one line, mirrors the existing pattern exactly. Verified:
+company now resolves to "Nike, Inc." via the display-name fallback; 274/274 backend
+tests pass (added a regression test,
+`test_find_company_falls_back_to_display_name_for_hirevue_interview_invites`); the
+Phase 6 evaluation baseline is unchanged (no dataset example touches `hirevue.com`).
+
+**Two more real extraction gaps found, not fixed this session** (a Verisk rejection
+email, sender `TalentAcquisition@oraclecloud.verisk.com`): company extracted as
+"Oraclecloud" instead of "Verisk", and position not extracted at all despite the body
+stating it explicitly ("Tech Intern | 2027 Summer Internship Program"). Root-caused,
+not just observed unusual — see the two new entries under "Known gaps" above for the
+mechanism in each case. Both are safe (confidence 55%, correctly routed to review, no
+auto-apply), just extraction-quality gaps for a future pass.
+
+**Confirmed still true from Phase 5's mailbox on Phase 6 code**: real-mail confidence
+has never crossed the 0.85 auto-apply threshold across the full ~6,560-message history
+(max observed 0.75, average ~0.37 on pending-review items) — the Phase 6 recalibration
+improved the curated dataset's `auto_apply_rate` (0.403 → 0.431) but real mail is still
+systematically lower-signal than the dataset. To directly exercise the high-confidence
+auto-apply path under today's code (not just the pre-Phase-6 fixture already in the
+DB), sent a fresh clean test email ("Thank you for applying to the Software Engineer
+position at Acme Corp"-style, company "NovaByte Technologies") to the connected
+mailbox: extracted cleanly (company/position/status all correct), confidence 0.90,
+correctly auto-created via the "create" path. Confirms the auto-apply mechanism itself
+is intact under Phase 6's changes; the low-real-world-confidence issue remains an
+accepted, already-documented gap (Phase 6 spec's scope explicitly excluded touching
+`classification_confidence_threshold`).
+
+**Status detection**: real examples exist in this mailbox's history for Applied (37),
+Interview (3), OA (6), and Rejected (6), all correctly classified. No real Offer email
+exists in this mailbox, so that path wasn't exercised — not fixed or worked around, per
+the decision to use real emails where practical rather than manufacture every case.
+
+**Housekeeping note, not a classifier finding**: the review queue accumulates across
+every testing session since Phase 4 (64 pending items at the start of this session,
+predating Phase 6). `ProcessedMessage` rows are never re-classified once written
+(idempotency by design — see "Idempotency" above), so an old row's `extracted_company`
+etc. can reflect a *previous* classifier version, not current code. One review-queue
+item (a TikTok email) showed company="Careers" from an old run; re-running its exact
+subject/sender through current code gives "Tiktok" correctly — already fixed, just
+stale data. Don't infer a live bug from an old queue row without re-running it through
+current code first.
 
 ## Local dev environment (this machine)
 
