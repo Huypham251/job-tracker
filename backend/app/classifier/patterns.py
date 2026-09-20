@@ -64,6 +64,13 @@ NEGATIVE_PATTERNS: list[tuple[str, int]] = [
     (r"unsubscribe", 2),
     (r"view (?:this|in) browser", 2),
     (r"%\s*off", 2),
+    # Both found via real Phase 6 manual-testing/eval-dataset false positives, both
+    # weighted to just clear the two known real cases (job_signal=4 in each) without
+    # touching the interview/opening/opportunity positive patterns those cases also
+    # trip — see the Phase 7 spec §2.3/§2.4 for why the positive patterns themselves
+    # are out of scope.
+    (r"\bnewsletter\b", 2),
+    (r"\bmeetup\b", 2),
 ]
 
 ATS_DOMAINS: frozenset[str] = frozenset(
