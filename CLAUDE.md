@@ -1,8 +1,8 @@
 # Job Application Tracker — Project Notes
 
-Read this before starting Phase 6. It's a snapshot of where the project stands after
-Phase 5 (2026-09-17), not a spec — the specs under `docs/superpowers/specs/` and plans
-under `docs/superpowers/plans/` remain the source of truth for what was decided and why.
+Read this before starting a new phase. It's a snapshot of where the project stands, not
+a spec — the specs under `docs/superpowers/specs/` and plans under
+`docs/superpowers/plans/` remain the source of truth for what was decided and why.
 
 ## Status
 
@@ -10,7 +10,8 @@ Phases 1–6 are complete and merged to `main`. Phase 7 (classifier extraction f
 implemented and verified on a feature branch, pending merge. Phase 5 was manually verified end-to-end
 against a real Gmail account (2026-09-17) — see "Manual testing findings" below — and
 Phase 6 was manually verified the same way (2026-09-20) — see "Phase 6 manual testing
-findings" below. Backend: 279/279 tests passing. Frontend:
+findings" below. Backend: 281/281 tests passing (279 plus two regression tests added
+during Phase 7's final whole-branch review — see "Phase 7 results" below). Frontend:
 `tsc -b` clean, `oxlint` clean (0 errors, 3 pre-existing warnings in
 `AuthContext.tsx`/`useApplications.ts`, unrelated to any phase and not touched by any of
 them). Working tree clean, no uncommitted changes.
@@ -33,10 +34,14 @@ them). Working tree clean, no uncommitted changes.
   normalization); extraction fixes (greeting-bleed trim, broadened templates,
   subdomain/assessment-platform gaps); status-pattern coverage; measured confidence
   recalibration. See "Phase 6 results" below.
-- Phase 7: three targeted classifier extraction fixes found during Phase 6 manual
-  testing (apex-domain company resolution for a leading-ATS-subdomain sender,
-  pipe-delimited/longer position titles, newsletter/meetup false positives), plus
-  three new evaluation-dataset examples covering the gaps. See "Phase 7 results" below.
+- Phase 7: three targeted classifier extraction fixes (a fourth gap — the meetup false
+  positive — was already partly addressed by the same negative-pattern mechanism as the
+  newsletter fix, so it shipped as part of that same commit rather than a separate one)
+  found during Phase 6 manual testing (apex-domain company resolution for a
+  leading-ATS-subdomain sender, pipe-delimited/longer position titles, newsletter/meetup
+  false positives), plus three new evaluation-dataset examples covering the gaps. A
+  final whole-branch review then found and fixed two further issues the per-task
+  reviews had missed — see "Phase 7 results" below.
 
 **Read `2026-09-15-job-tracker-phase-4-pipeline-design.md` for the pipeline architecture
 that's still current (matching, trust model, DB schema, `/pipeline/review*` API,
@@ -227,13 +232,32 @@ sourced (paginated, bounded, resumable instead of a flat top-20 fetch).
   a generic email-infra label). Not fixed — a general fix (e.g., preferring the label
   before the TLD when the domain has 3+ labels) needs verification against real
   multi-label domains that are legitimately the whole company name (not just
-  subdomain+company) before it's safe to add.
+  subdomain+company) before it's safe to add. **This specific evidenced shape
+  (`oraclecloud.<company>.com`) is now fixed in Phase 7** — see "Phase 7 results" below;
+  the broader multi-label-domain question above is still open, and a wider, unrelated
+  hazard in the same prefix-stripping mechanism is newly flagged below.
 - **Position extraction can't capture a title containing `|`.** `_POSITION_TOKEN`
   (`classifier/fields.py`) allows `[\w&'/+\-]` per word — no pipe — so a real title like
   "Tech Intern | 2027 Summer Internship Program" (from the same Verisk email above)
   fails to extract regardless of the subdomain issue; that title is also 7 words, over
   the 6-word cap, so widening the character class alone wouldn't be enough. Found during
-  Phase 6 manual testing, not fixed.
+  Phase 6 manual testing, not fixed. **Fixed in Phase 7** (pipe added to the allowed
+  characters, cap raised to 8 words, and — found only during Phase 7's own final
+  whole-branch review — a capitalized-first-word guard added to stop the wider cap from
+  reopening the overcapture bug it otherwise would have) — see "Phase 7 results" below.
+- **`_SUBDOMAIN_PREFIXES`'s prefix-stripping has no guard that the remainder is still a
+  plausible domain.** `extract_sender_domain` (`classifier/text.py`) strips a matched
+  prefix (`mail.`, `jobs.`, `e.`, `oraclecloud.`, etc.) unconditionally, with no check
+  that what's left still looks like a real domain. A sender at exactly
+  `noreply@oraclecloud.com` (bare, no further subdomain — as opposed to the evidenced
+  `oraclecloud.<company>.com` shape Phase 7 fixed) strips down to `"com"`, producing
+  company="Com". This hazard class predates Phase 7 (the same thing happens today for
+  `mail.`/`jobs.`/`e.` against a sender at exactly `mail.com`/`jobs.com`/`e.com`) —
+  Phase 7's `oraclecloud.` addition widens the class of triggering inputs but did not
+  introduce the underlying bug. Not fixed here — a proper fix means auditing every
+  `_SUBDOMAIN_PREFIXES` entry together (e.g. requiring at least one more label to
+  remain after stripping), which is broader than this branch's narrowly-evidenced,
+  single-sender-shape scope.
 
 ## Manual testing findings (2026-09-17)
 
@@ -337,7 +361,9 @@ not fixed this phase**:
   announcement) is a false positive, driven entirely by original, pre-Phase-6 patterns
   (`interview (?:invitation|process)` + `\bcandidates?\b`) that this phase didn't touch
   — real signal that those two original patterns are too loosely scoped for some real
-  non-recruiting business correspondence.
+  non-recruiting business correspondence. **Fixed in Phase 7** (a `\bmeetup\b` negative
+  pattern, not a change to the two loosely-scoped positive patterns themselves — see
+  "Phase 7 results" below).
 - The new `\bopening\b`/`\bopportunity\b` `GENERIC_JOB_PATTERNS` entries (weight 3 each,
   added in Task 9) can alone cross the job-relatedness threshold with zero corroboration
   — a deliberate, dataset-verified trade-off (needed for `recruiter_outreach`
@@ -412,9 +438,12 @@ current code first.
 
 ## Phase 7 results (2026-09-20)
 
-Three targeted classifier extraction fixes, found during Phase 6's manual testing
-against a real Gmail account (see "Two more real extraction gaps found, not fixed this
-session" and the "hiring managers panel" false-positive note above) and formalized in
+Three targeted classifier extraction fixes (the design spec frames this as four
+concrete gaps, §2.1–§2.4 — the newsletter and meetup false positives, §2.3/§2.4, share
+one negative-pattern mechanism and landed as a single commit, so four gaps map to three
+code fixes), found during Phase 6's manual testing against a real Gmail account (see
+"Two more real extraction gaps found, not fixed this session" and the "hiring managers
+panel" false-positive note above) and formalized in
 `docs/superpowers/specs/2026-09-20-job-tracker-phase-7-classifier-extraction-fixes-design.md`
 and the accompanying plan. Evaluation dataset grew from 88 to 91 examples (three new
 cases added up front, each verified to reproduce its bug before the corresponding fix
@@ -430,6 +459,26 @@ output as "after":
 | position_exact_accuracy | 0.692 | 0.955 |
 | precision_at_threshold | 0.828 | 1.0 |
 | auto_apply_rate | 0.403 | 0.419 |
+
+(This table's `auto_apply_rate` baseline, 0.403, is the frozen Phase 6 baseline
+(`evaluation/baseline_metrics.json`, measured before any Phase 6 code change) — it is
+not the same number as the 0.431 the "Phase 6 results" section above reports, which was
+measured after Phase 6's own fixes landed, at a different point in the project's
+history. The two new job-related dataset examples Phase 7 added (Verisk/oraclecloud and
+Solstice Robotics) both score well under the 0.85 auto-apply confidence threshold, so
+neither could have moved `auto_apply_rate` on its own in either direction; the 0.419
+here reflects zero pre-existing auto-applies lost and a small net gain from Phase 7's
+extraction fixes correcting a few previously-review-queued items enough to clear the
+threshold.)
+
+Re-running `evaluation.compare` after this whole-branch review's own two fixes (the
+`_POSITION_TOKEN` capitalized-first-word guard and the anchored `\bnewsletter\b`
+pattern, see below) reproduced every number in the table above unchanged — neither fix
+touches any of the 91 dataset examples' actual classification, since the dataset has no
+example matching Finding 1's filler-clause shape or Finding 2's footer-newsletter shape.
+`MIN_AUTO_APPLY_RATE` in `tests/test_evaluation_accuracy.py` therefore stays at `0.40`
+(comment: "currently 31/74=0.419"), unchanged — see that file for the "tolerates one
+more miss" rule its value follows.
 
 Each fix is covered by both a dataset example and a direct regression test, not just
 the aggregate numbers above:
@@ -456,6 +505,54 @@ needed to fix the one real failing case, and adding `\bpanel\b` would risk suppr
 legitimate "panel interview" scheduling email that a real candidate might receive — an
 evidence-based narrowing of the spec, not an oversight, documented at the point it
 happened (the plan's Task 4).
+
+**Two Important issues found and fixed during final whole-branch review, not caught by
+any per-task review** (each task above passed its own review individually; these only
+became visible once the branch was read as a whole):
+- **Finding 1 — position-token overcapture reopened.** The pipe-delimited-title fix
+  above widened `_POSITION_TOKEN`'s word cap from 6 to 8 to fit a real title, but the
+  word cap alone only bounds an overcapture's *length*, not whether one happens — an
+  8-word span starting mid-filler-clause ("time you took to apply for the Analyst") is
+  exactly the failure mode the file's own pre-Phase-7 comments already warn about, just
+  longer. Fixed the same way `_COMPANY_TOKEN` already guards against it: the token's
+  first character must now be an uppercase letter or digit (only the first word, unlike
+  `_COMPANY_TOKEN` which requires every word capitalized — position titles routinely
+  have lowercase words after the first, e.g. "Software Engineer II"). Covered by
+  `test_find_position_does_not_capture_a_lowercase_filler_clause` in
+  `tests/test_classifier_fields.py`; the pipe-delimited Solstice Robotics case above
+  still passes unchanged.
+- **Finding 2 — `\bnewsletter\b` too broad.** The newsletter negative pattern stacked
+  additively with the pre-existing `unsubscribe` pattern (2+2=4), so a genuine
+  job-related email whose footer happened to say "unsubscribe from our newsletter"
+  could flip to a false negative it wasn't before — strictly worse than the
+  review-queue noise the pattern was meant to fix, since this app's idempotency model
+  (`ProcessedMessage`, unique per message) means a false negative is silently dropped
+  forever, not just re-seen and re-scored later. Fixed by anchoring the pattern to the
+  first ~60 characters of the combined text (`^.{0,60}\bnewsletter\b`) rather than
+  matching anywhere: `text.combine_subject_body` always puts the subject first, and
+  every real evidenced newsletter (the dataset's "Riverside Neighbors September
+  Newsletter" example, the pre-existing "Your weekly career newsletter" example, and a
+  real "DNDA September Newsletter: A New Destination" subject the reviewer verified by
+  hand, not itself in the dataset) names itself within the first few words of its own
+  subject, while a footer mention is typically hundreds of characters in.
+  Covered by `test_negative_patterns_do_not_suppress_a_job_email_with_a_newsletter_footer_mention`
+  in `tests/test_classifier_patterns.py`, alongside the pre-existing
+  `test_negative_patterns_suppress_a_newsletter_with_incidental_job_language` (still
+  passes unchanged).
+
+Both fixes reproduce every number in the table above exactly — see the note under it —
+since neither touches any example already in `evaluation/dataset.jsonl`; their value is
+closing failure modes the dataset doesn't yet exercise, evidenced instead by direct
+regression tests against the specific text shapes the whole-branch review constructed.
+
+Also addressed in the same review pass, Minor severity: a comment on the
+`oraclecloud.` subdomain-prefix entry (`classifier/text.py`) was reworded to scope its
+claim to the one evidenced sender shape (`oraclecloud.<company>.com`) rather than
+reading as though it handled Oracle Fusion HCM tenant subdomains generally (e.g.
+`tenant.fa.us2.oraclecloud.com`, a different, more common shape that still resolves
+incorrectly and is not fixed by this branch). See the new Known gap below on
+`_SUBDOMAIN_PREFIXES` for a related, wider hazard this same review surfaced but did not
+fix.
 
 ## Local dev environment (this machine)
 

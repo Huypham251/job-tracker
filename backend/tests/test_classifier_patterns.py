@@ -142,6 +142,26 @@ def test_negative_patterns_suppress_a_newsletter_with_incidental_job_language() 
     assert job_signal - negative_signal < JOB_RELATED_THRESHOLD
 
 
+def test_negative_patterns_do_not_suppress_a_job_email_with_a_newsletter_footer_mention() -> None:
+    # Regression case for the Phase 7 whole-branch review, Finding 2: the unanchored
+    # `\bnewsletter\b` negative pattern stacked additively with `unsubscribe` (2+2=4)
+    # and could flip a genuine job-related email to a false negative purely because
+    # of a routine, far-into-the-body footer mention ("you can unsubscribe from our
+    # newsletter at any time") that has nothing to do with the email's actual
+    # subject. Anchoring the pattern to the first ~60 characters (where a subject
+    # line lives, per text.combine_subject_body's subject-first join) fixes this
+    # without weakening the pattern's original real-newsletter-detection purpose —
+    # see test_negative_patterns_suppress_a_newsletter_with_incidental_job_language
+    # above, which still passes.
+    body = (
+        "we are pleased to offer you the job offer for the position. "
+        + ("lorem ipsum filler text padding out the body so the footer is far away. " * 5)
+        + "you can unsubscribe from our newsletter at any time."
+    )
+    _, job_signal, negative_signal = classify(body.lower(), "")
+    assert job_signal - negative_signal >= JOB_RELATED_THRESHOLD
+
+
 def test_negative_patterns_suppress_a_meetup_style_false_positive() -> None:
     # Real gap already present in evaluation/dataset.jsonl (the "Meetup: Hiring
     # managers panel this Thursday" example) — third-person, broadcast-style framing

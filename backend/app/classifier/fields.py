@@ -52,9 +52,24 @@ _COMPANY_BOUNDARY = r"(?=\s*[.,!]|\s+(?:for|and|regarding|about|which|who)\b|\s*
 # "Full-Stack/Backend" use them.
 # `|` is also included (Phase 7): real titles like "Tech Intern | 2027 Summer
 # Internship Program" use it as a separator, and the word cap was raised from 6 to 8
-# to fit such titles — still bounded, not unbounded, so the overcapture risk this
-# comment describes above doesn't reopen.
-_POSITION_TOKEN = r"[\w&'/+|\-]+(?:\s[\w&'/+|\-]+){0,7}"
+# to fit such titles. The word cap alone is NOT sufficient protection, though it may
+# look that way at a glance: it bounds the length of an overcapture but does not stop
+# one from happening — an 8-word span starting mid-filler-clause ("time you took to
+# apply for the Analyst") is exactly as fake-plausible a match as the shorter 6-word
+# overcaptures the original comment above warns about, just longer. What actually
+# prevents it (Phase 7 whole-branch review, Finding 1) is the same technique
+# _COMPANY_TOKEN above uses: requiring the token's first character to be an uppercase
+# letter or digit. Unlike _COMPANY_TOKEN, only the FIRST word is required to start
+# capitalized — position titles routinely have lowercase words after the first
+# ("Manager of Engineering", "Software Engineer II") — but a real title's first word
+# is essentially always capitalized (or a leading digit, e.g. a level number), while
+# the filler clauses that precede a real title in a sentence essentially never start
+# capitalized ("...for the time you took to apply for the Analyst role..." — the
+# filler clause starts on lowercase "time"). Requiring only the first word still
+# rejects the filler-clause span while still matching every real multi-word title in
+# the dataset, including lowercase-tailed ones. `(?-i:...)` turns off the surrounding
+# pattern's re.IGNORECASE just for this one check, exactly as _COMPANY_TOKEN's does.
+_POSITION_TOKEN = r"(?-i:[A-Z0-9])[\w&'/+|\-]*(?:\s[\w&'/+|\-]+){0,7}"
 
 # "you" added to the leading-verb alternation (Task 8 calibration): offer
 # emails commonly phrase this as "pleased to offer you the X position at Y"

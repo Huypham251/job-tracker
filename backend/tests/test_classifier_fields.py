@@ -218,6 +218,20 @@ def test_find_position_matches_as_your_new_template() -> None:
     assert tier == "template"
 
 
+def test_find_position_does_not_capture_a_lowercase_filler_clause() -> None:
+    # Regression case for the Phase 7 whole-branch review, Finding 1: widening
+    # _POSITION_TOKEN's word cap from 6 to 8 (to fit a real pipe-delimited title,
+    # see test_find_position_captures_a_pipe_delimited_title below) reopened the
+    # overcapture bug this file's own comments warn about, for 7-8 word filler
+    # spans specifically. Before the capitalized-first-word guard, this matched
+    # "time you took to apply for the Analyst" (garbage, tier="template", zero
+    # confidence penalty) instead of just "Analyst".
+    text = "Thank you for the time you took to apply for the Analyst role at Acme."
+    position, tier = find_position(text, "hr@acme.com")
+    assert position == "Analyst"
+    assert tier == "template"
+
+
 def test_find_position_captures_a_pipe_delimited_title() -> None:
     # Real Verisk email found during Phase 6 manual testing: "Tech Intern | 2027
     # Summer Internship Program" fails today for two independent reasons — "|" isn't
