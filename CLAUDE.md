@@ -6,8 +6,7 @@ a spec — the specs under `docs/superpowers/specs/` and plans under
 
 ## Status
 
-Phases 1–6 are complete and merged to `main`. Phase 7 (classifier extraction fixes) is
-implemented and verified on a feature branch, pending merge. Phase 5 was manually verified end-to-end
+Phases 1–7 are complete and merged to `main`. Phase 5 was manually verified end-to-end
 against a real Gmail account (2026-09-17) — see "Manual testing findings" below — and
 Phase 6 was manually verified the same way (2026-09-20) — see "Phase 6 manual testing
 findings" below. Backend: 281/281 tests passing (279 plus two regression tests added
