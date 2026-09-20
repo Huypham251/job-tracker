@@ -7,6 +7,13 @@ _DISPLAY_NAME_RE = re.compile(r'^\s*"?([^"<]*?)"?\s*<')
 _SUBDOMAIN_PREFIXES = (
     "mail.", "notifications.", "e.", "no-reply.", "noreply.",
     "careers.", "jobs.", "talent.", "recruiting.",
+    # ATS/HCM platform labels that appear as a LEADING subdomain of the real
+    # employer's own domain (the opposite shape from a tenant subdomain like
+    # acme.myworkday.com, where the first label IS the company — see
+    # test_find_company_still_treats_workday_tenant_subdomain_as_the_company).
+    # Evidenced by a real Verisk email during Phase 6 manual testing:
+    # oraclecloud.verisk.com must resolve to "verisk", not "oraclecloud".
+    "oraclecloud.",
 )
 _WHITESPACE_RE = re.compile(r"\s+")
 

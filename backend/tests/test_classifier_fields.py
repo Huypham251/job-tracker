@@ -168,6 +168,27 @@ def test_find_company_does_not_treat_non_ats_assessment_platform_as_the_company(
     assert tier == "none"
 
 
+def test_find_company_prefers_the_apex_domain_over_an_oraclecloud_subdomain() -> None:
+    # Real Verisk rejection email found during Phase 6 manual testing: the sender
+    # domain is "oraclecloud.verisk.com" — Verisk's own domain, verisk.com, fronted by
+    # an "oraclecloud" ATS subdomain label. Before this fix, the first label
+    # ("oraclecloud", the platform) was extracted instead of the real employer.
+    company, tier = find_company("no template match here", "TalentAcquisition@oraclecloud.verisk.com")
+    assert company == "Verisk"
+    assert tier == "domain"
+
+
+def test_find_company_still_treats_workday_tenant_subdomain_as_the_company() -> None:
+    # Guards against a general "always prefer the label before the TLD" fix, which
+    # would break this opposite, already-correct pattern: here the FIRST label
+    # ("acme") is the real company and the platform is the base domain — the reverse
+    # of the oraclecloud.verisk.com shape above. The fix must stay a specific,
+    # evidenced label addition (oraclecloud.), not a positional rule.
+    company, tier = find_company("no template match here", "notify@acme.myworkday.com")
+    assert company == "Acme"
+    assert tier == "domain"
+
+
 def test_find_company_falls_back_to_display_name_for_hirevue_interview_invites() -> None:
     # HireVue is an interview/assessment platform, same category as hackerrank.com,
     # codesignal.com, testgorilla.com, codility.com (already in ATS_DOMAINS) — found
