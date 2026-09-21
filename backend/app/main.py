@@ -1,7 +1,14 @@
-from fastapi import FastAPI, Request
+from contextlib import asynccontextmanager
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
+
+from app.db.session import get_db
 
 from app.applications.exceptions import ApplicationNotFound
 from app.applications.router import router as applications_router
@@ -17,8 +24,17 @@ from app.sync.router import router as sync_router
 from app.sync.schemas import SyncJobRead
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if settings.run_worker_in_process:
+        from app.sync.inprocess import start_worker_thread
+
+        start_worker_thread()
+    yield
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Job Application Tracker", version="0.1.0")
+    app = FastAPI(title="Job Application Tracker", version="0.1.0", lifespan=lifespan)
 
     # Used only for the few seconds of the OAuth state/nonce handshake —
     # entirely separate from the app's own access_token cookie. Added
@@ -80,6 +96,34 @@ def create_app() -> FastAPI:
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/health/ready")
+    def health_ready(db: Session = Depends(get_db)) -> JSONResponse:
+        try:
+            db.execute(text("SELECT 1"))
+        except Exception:
+            return JSONResponse(status_code=503, content={"status": "not_ready"})
+        return JSONResponse(status_code=200, content={"status": "ok"})
+
+    _WORKER_STALE_SECONDS = 30  # 15x POLL_INTERVAL_SECONDS — generous margin
+
+    @app.get("/health/worker")
+    def health_worker() -> JSONResponse:
+        from datetime import datetime, timezone
+
+        from app.sync.worker import get_last_poll_at
+
+        last_poll = get_last_poll_at()
+        if last_poll is None:
+            return JSONResponse(
+                status_code=503, content={"status": "not_running", "last_poll_at": None}
+            )
+        staleness = (datetime.now(timezone.utc) - last_poll).total_seconds()
+        body = {"status": "ok", "last_poll_at": last_poll.isoformat(), "seconds_since_poll": staleness}
+        if staleness > _WORKER_STALE_SECONDS:
+            body["status"] = "stale"
+            return JSONResponse(status_code=503, content=body)
+        return JSONResponse(status_code=200, content=body)
 
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(applications_router, prefix="/api/v1")

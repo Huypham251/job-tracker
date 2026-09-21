@@ -30,6 +30,17 @@ PAGE_SIZE = 100
 BASE_BACKOFF_SECONDS = 30
 MAX_BACKOFF_SECONDS = 3600
 
+_last_poll_at: datetime | None = None
+
+
+def get_last_poll_at() -> datetime | None:
+    """Used by app/main.py's /health/worker endpoint to check the in-process
+    worker thread (app/sync/inprocess.py) is actually making progress, not
+    just technically alive — a plain thread.is_alive() check would almost
+    never go false, since run_forever()'s own broad exception handling means
+    the thread practically never dies even when stuck."""
+    return _last_poll_at
+
 
 def _backoff_seconds(attempts: int) -> float:
     return min(BASE_BACKOFF_SECONDS * (2**attempts), MAX_BACKOFF_SECONDS)
@@ -193,7 +204,9 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
 
 
 def run_forever(poll_interval: float = POLL_INTERVAL_SECONDS) -> None:
+    global _last_poll_at
     while True:
+        _last_poll_at = datetime.now(timezone.utc)
         db = SessionLocal()
         job = None
         try:
