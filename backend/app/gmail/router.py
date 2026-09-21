@@ -16,7 +16,7 @@ router = APIRouter(prefix="/gmail", tags=["gmail"])
 
 @router.get("/connect")
 async def gmail_connect(request: Request, current_user: User = Depends(get_current_user)):
-    redirect_uri = str(request.url_for("gmail_callback"))
+    redirect_uri = f"{settings.frontend_url}/api/v1/gmail/callback"
     return await oauth.google_gmail.authorize_redirect(request, redirect_uri)
 
 

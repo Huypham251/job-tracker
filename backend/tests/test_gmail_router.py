@@ -93,6 +93,26 @@ def test_callback_oauth_error_redirects_without_creating_connection(
     assert status_response.json()["connected"] is False
 
 
+def test_gmail_connect_redirect_uri_uses_frontend_url_not_request_host(
+    auth_client: TestClient, monkeypatch
+) -> None:
+    captured = {}
+
+    async def fake_authorize_redirect(request, redirect_uri):
+        captured["redirect_uri"] = redirect_uri
+        from fastapi.responses import RedirectResponse
+
+        return RedirectResponse(url="https://accounts.google.com/fake")
+
+    monkeypatch.setattr(oauth.google_gmail, "authorize_redirect", fake_authorize_redirect)
+
+    auth_client.get(f"{BASE}/connect", follow_redirects=False)
+
+    from app.core.config import settings
+
+    assert captured["redirect_uri"] == f"{settings.frontend_url}/api/v1/gmail/callback"
+
+
 def test_messages_endpoint_returns_summaries(
     auth_client: TestClient, connected_gmail, monkeypatch
 ) -> None:

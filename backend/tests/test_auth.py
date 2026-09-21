@@ -82,6 +82,26 @@ def test_google_callback_oauth_error_redirects_to_frontend(
     assert response.headers["location"] == settings.frontend_url
 
 
+def test_google_login_redirect_uri_uses_frontend_url_not_request_host(
+    client: TestClient, monkeypatch
+) -> None:
+    captured = {}
+
+    async def fake_authorize_redirect(request, redirect_uri):
+        captured["redirect_uri"] = redirect_uri
+        from fastapi.responses import RedirectResponse
+
+        return RedirectResponse(url="https://accounts.google.com/fake")
+
+    from app.auth.oauth import oauth
+
+    monkeypatch.setattr(oauth.google, "authorize_redirect", fake_authorize_redirect)
+
+    client.get("/api/v1/auth/google/login", follow_redirects=False)
+
+    assert captured["redirect_uri"] == f"{settings.frontend_url}/api/v1/auth/google/callback"
+
+
 def test_logout_clears_session(auth_client: TestClient) -> None:
     assert auth_client.get("/api/v1/auth/me").status_code == 200
     logout_response = auth_client.post("/api/v1/auth/logout")
