@@ -42,6 +42,19 @@ def get_last_poll_at() -> datetime | None:
     return _last_poll_at
 
 
+def _record_poll() -> None:
+    """Records that the worker loop is alive and making progress — called
+    once per run_forever() tick AND once per message inside process_job's
+    inner loop, so a single long-running sync job (many messages, each with
+    its own Gmail API calls) doesn't make /health/worker falsely report
+    'stale' just because run_forever()'s own outer loop hasn't ticked again
+    yet. Found via real production verification: a 300-message initial sync
+    legitimately ran for several minutes inside one process_job() call,
+    during which the outer-loop-only heartbeat sat frozen the entire time."""
+    global _last_poll_at
+    _last_poll_at = datetime.now(timezone.utc)
+
+
 def _backoff_seconds(attempts: int) -> float:
     return min(BASE_BACKOFF_SECONDS * (2**attempts), MAX_BACKOFF_SECONDS)
 
@@ -149,6 +162,7 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
             )
 
             for message_id in message_ids:
+                _record_poll()
                 if message_id in already_processed_ids:
                     continue
 
@@ -204,9 +218,8 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
 
 
 def run_forever(poll_interval: float = POLL_INTERVAL_SECONDS) -> None:
-    global _last_poll_at
     while True:
-        _last_poll_at = datetime.now(timezone.utc)
+        _record_poll()
         db = SessionLocal()
         job = None
         try:
