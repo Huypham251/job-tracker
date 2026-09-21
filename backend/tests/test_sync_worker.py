@@ -11,7 +11,13 @@ from app.gmail.crypto import encrypt_token
 from app.gmail.models import GmailConnection
 from app.pipeline.models import ProcessedMessage
 from app.sync.models import SyncJob
-from app.sync.worker import _safe_error_message, claim_next_job, process_job, reap_stale_jobs
+from app.sync.worker import (
+    _safe_error_message,
+    claim_next_job,
+    get_last_poll_at,
+    process_job,
+    reap_stale_jobs,
+)
 from app.users.models import User
 
 
@@ -628,3 +634,18 @@ def test_run_forever_reap_failure_does_not_block_claim_next_job(monkeypatch) -> 
         worker_module.run_forever(poll_interval=0)
 
     assert len(claim_calls) == 1
+
+
+def test_get_last_poll_at_returns_none_before_any_poll(monkeypatch) -> None:
+    import app.sync.worker as worker_module
+
+    monkeypatch.setattr(worker_module, "_last_poll_at", None)
+    assert get_last_poll_at() is None
+
+
+def test_get_last_poll_at_returns_the_recorded_timestamp(monkeypatch) -> None:
+    import app.sync.worker as worker_module
+
+    fixed = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(worker_module, "_last_poll_at", fixed)
+    assert get_last_poll_at() == fixed
