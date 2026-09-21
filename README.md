@@ -85,12 +85,15 @@ start and the automated tests pass, but they cannot complete a real
 sign-in. To actually log in through the browser:
 
 1. Go to <https://console.cloud.google.com/> and create (or select) a project.
-2. **APIs & Services → OAuth consent screen.** Choose "External", fill in
-   an app name and your email as support/developer contact, save. While
-   the app is in "Testing" mode, add your own Google account under "Test
-   users" — only test users can complete the OAuth flow before the app is
-   published/verified.
-3. **APIs & Services → Credentials → Create Credentials → OAuth client ID.**
+2. **Google Auth Platform → Branding**, then **Audience.** Choose "External",
+   fill in an app name and your email as support/developer contact, save.
+   While the app is in "Testing" mode (the default), add your own Google
+   account under "Test users" on the Audience page — only test users can
+   complete the OAuth flow before the app is published/verified. (Google
+   redesigned this console around the "Google Auth Platform" product name
+   in 2026 — if you land on an older "OAuth consent screen" single-page
+   layout instead, the same fields exist there under different headings.)
+3. **Google Auth Platform → Clients → Create Client.**
    Application type: "Web application".
 4. Under "Authorized redirect URIs", add exactly:
    `http://localhost:8000/api/v1/auth/google/callback`
@@ -118,7 +121,7 @@ second, explicit consent a signed-in user triggers from the dashboard's
    `https://www.googleapis.com/auth/gmail.readonly`. This is a sensitive
    scope — while the app is in "Testing" mode, only your own account (added
    as a test user in the login setup above) can complete this consent.
-3. APIs & Services → Credentials → open your existing OAuth client → add
+3. Google Auth Platform → Clients → open your existing OAuth client → add
    `http://localhost:8000/api/v1/gmail/callback` to "Authorized redirect
    URIs". No new client ID/secret is needed.
 4. Generate a token-encryption key and add it to `backend/.env`:
