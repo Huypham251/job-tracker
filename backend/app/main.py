@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -22,8 +24,17 @@ from app.sync.router import router as sync_router
 from app.sync.schemas import SyncJobRead
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if settings.run_worker_in_process:
+        from app.sync.inprocess import start_worker_thread
+
+        start_worker_thread()
+    yield
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Job Application Tracker", version="0.1.0")
+    app = FastAPI(title="Job Application Tracker", version="0.1.0", lifespan=lifespan)
 
     # Used only for the few seconds of the OAuth state/nonce handshake —
     # entirely separate from the app's own access_token cookie. Added

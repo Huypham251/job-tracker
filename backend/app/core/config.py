@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     # updated_at hasn't moved in this long is treated as orphaned by a crash
     # (see worker.py's reap_stale_jobs), not as still legitimately working.
     sync_stale_job_threshold_minutes: int = Field(default=15, gt=0)
+    # Production only (set via the Render Web Service's environment) — starts
+    # sync/worker.py's run_forever() on a background thread at FastAPI startup
+    # instead of requiring a separate `python -m app.sync.worker` process.
+    # Defaults false so local dev is unaffected — see app/sync/inprocess.py.
+    run_worker_in_process: bool = False
 
     @property
     def cors_origins_list(self) -> list[str]:
