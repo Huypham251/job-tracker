@@ -717,10 +717,19 @@ At <https://dashboard.render.com>, "New +" → "Web Service" → connect the Git
 from Task 3. Configure:
 - **Root Directory**: `backend`
 - **Runtime**: Python 3
-- **Build Command**: `uv sync`
-- **Pre-Deploy Command**: `uv run alembic upgrade head`
+- **Build Command**: `uv sync && uv run alembic upgrade head`
 - **Start Command**: `uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'`
 - **Instance Type**: Free
+
+**Correction found during execution, not in the original plan text**: Render's
+Pre-Deploy Command (this task originally called for it) is a paid-tier-only feature —
+free Web Services are rejected with "pre-deploy command is not supported for free
+tier services." The Build Command above folds the migration in instead
+(`uv sync && uv run alembic upgrade head`), confirmed as the documented workaround.
+Render still never starts an instance from a failed build, so a broken migration
+still can't reach production traffic — see the spec's §6 for the full corrected
+reasoning, including what's lost (failure-mode separation) versus what's kept (the
+core safety property).
 
 - [ ] **Step 2: Set environment variables**
 
@@ -1035,8 +1044,10 @@ In order, against `https://<your-frontend>.onrender.com`:
    wake succeeds and every check above still passes afterward.
 10. Push one trivial, reversible migration (e.g. a no-op comment-only migration, or a
     genuinely reversible column addition if there's a real one queued) through the
-    full CI → merge → auto-deploy pipeline, and confirm Render's Pre-Deploy Command
-    log shows it being applied before the new instance starts serving.
+    full CI → merge → auto-deploy pipeline, and confirm the Build Command's log shows
+    `alembic upgrade head` being applied before the new instance starts serving
+    (Task 6's correction: free-tier Render can't use Pre-Deploy Command, so the
+    migration runs as the tail of the Build Command instead — see spec §6).
 
 - [ ] **Step 2: Record results**
 
@@ -1099,7 +1110,9 @@ Run: `git status --short` — expected: no output.
 
 - **Spec coverage**: §3 (architecture/topology) → Tasks 6, 8. §3.3 (in-process
   worker) → Tasks 1, 2, 9. §4 (secrets) → Tasks 6, 7. §5 (OAuth) → Task 7. §6
-  (migrations) → Task 6's Pre-Deploy Command, verified in Task 5 and Task 12 step 10.
+  (migrations) → Task 6's Build Command (corrected from Pre-Deploy Command during
+  execution — free tier doesn't support it, see spec §6), verified in Task 5 and
+  Task 12 step 10.
   §7 (health checks) → Task 1. §8 (logging) → no dedicated task; Render's built-in log
   capture requires no setup, confirmed as a non-action in §8 of the spec itself. §9
   (CI) → Task 4. §10 (Docker) → a decision, not an implementation task — nothing to

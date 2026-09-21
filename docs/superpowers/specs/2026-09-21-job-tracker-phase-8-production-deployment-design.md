@@ -223,20 +223,33 @@ Same OAuth client used today, additive changes only (existing `localhost` entrie
 
 ## 6. Database Migrations During Deployment
 
-Render's "Pre-Deploy Command" (confirmed current via Render's own changelog) runs
-after a build succeeds and before the new instance starts serving traffic — set to
-`cd backend && uv run alembic upgrade head`. This makes migrations automatic, ordered
-correctly relative to new code, and impossible to forget (closing the exact gap
-Phase 5's manual-testing findings already hit once locally). Confirmed failure
-behavior: if the pre-deploy command (the migration) fails, the deploy is marked failed
-and the previous instance keeps serving — the new, broken instance never receives
-traffic. One asymmetry worth designing around: if the *migration* succeeds but the
-*new application code* has a bug, redeploying the previous code image does **not**
-undo the migration — the schema change persists. This is the standard reason
-migrations should stay backward-compatible with the previous app version for at least
-one deploy cycle (additive changes, not drop-and-recreate in the same step) — worth
-stating as a house rule for this project's migrations going forward, not just a Phase 8
-one-off.
+**Corrected during Task 6 (implementation checkpoint), documented here at the point
+the correction happened**: Render's "Pre-Deploy Command" — this section's original
+mechanism — is a **paid-tier-only feature**; free Web Services are rejected with
+"pre-deploy command is not supported for free tier services." This wasn't caught by
+the pre-execution research pass (which confirmed the feature exists and its failure
+semantics, but not its tier-gating) and only surfaced when actually configuring the
+free-tier service. The documented, working substitute for free tier: fold the
+migration into the **Build Command** instead — `uv sync && uv run alembic upgrade
+head`, run once per deploy, before the new instance starts.
+
+This changes the failure-mode guarantee from the original design: a failed Pre-Deploy
+Command aborts the deploy cleanly (previous instance keeps serving, confirmed via
+Render's changelog). A failed **Build Command** also aborts the deploy the same
+way — Render never starts an instance from a failed build — so the safety property
+("a broken migration never reaches production traffic") still holds. What's lost is
+the *separation of concerns*: on the free tier, a migration failure and a genuine
+build/dependency failure look identical in the build log, whereas Pre-Deploy Command
+would have made a migration failure specifically distinguishable. Acceptable at this
+project's scale (a single maintainer reading one build log), not worth paying for.
+
+The asymmetry noted in the original design still applies regardless of which
+mechanism runs the migration: if the migration succeeds but the *new application
+code* has a bug, redeploying the previous code image does **not** undo the
+migration — the schema change persists. Migrations should stay backward-compatible
+with the previous app version for at least one deploy cycle (additive changes, not
+drop-and-recreate in the same step) — a house rule for this project's migrations
+going forward, not just a Phase 8 one-off.
 
 Given this is a single-maintainer portfolio app, not a multi-instance production
 system with live traffic during deploys, a straightforward "migrate, then deploy" is
