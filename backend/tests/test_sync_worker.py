@@ -186,6 +186,41 @@ def test_process_job_pages_through_gmail_and_processes_each_message(
     assert stored["m1"].sync_job_id == job.id
 
 
+def test_process_job_updates_the_heartbeat_while_processing_messages(
+    db_session, user, monkeypatch
+) -> None:
+    import app.sync.worker as worker_module
+
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+
+    pages = [(["m1"], "page-2"), (["m2"], None)]
+
+    def fake_list_page(token, *, query, page_token, max_results):
+        return pages.pop(0)
+
+    monkeypatch.setattr(google_api, "list_message_ids_page", fake_list_page)
+    monkeypatch.setattr(google_api, "get_message_summary", lambda token, mid: _make_summary(mid, f"Subject {mid}"))
+    monkeypatch.setattr(google_api, "get_message_body", lambda token, mid: "body")
+    extractor = _FakeExtractor(
+        {
+            "Subject m1": EmailExtraction(is_job_related=False, confidence=0.99),
+            "Subject m2": EmailExtraction(
+                is_job_related=True, confidence=0.95, company="Acme", position="SWE", status="applied"
+            ),
+        }
+    )
+
+    monkeypatch.setattr(worker_module, "_last_poll_at", None)
+    assert get_last_poll_at() is None
+
+    process_job(db_session, job, extractor)
+
+    assert get_last_poll_at() is not None
+
+
 def test_process_job_checkpoints_page_token_after_each_page(db_session, user, monkeypatch) -> None:
     _connect_gmail(db_session, user)
     job = _make_job(user.id)
