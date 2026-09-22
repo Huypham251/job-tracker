@@ -186,6 +186,50 @@ def test_process_job_pages_through_gmail_and_processes_each_message(
     assert stored["m1"].sync_job_id == job.id
 
 
+def test_process_job_expunges_the_session_between_pages_to_bound_memory_growth(
+    db_session, user, monkeypatch
+) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+
+    pages = [(["m1"], "page-2"), (["m2"], None)]
+
+    def fake_list_page(token, *, query, page_token, max_results):
+        return pages.pop(0)
+
+    monkeypatch.setattr(google_api, "list_message_ids_page", fake_list_page)
+    monkeypatch.setattr(google_api, "get_message_summary", lambda token, mid: _make_summary(mid, f"Subject {mid}"))
+    monkeypatch.setattr(google_api, "get_message_body", lambda token, mid: "body")
+    extractor = _FakeExtractor(
+        {
+            "Subject m1": EmailExtraction(is_job_related=False, confidence=0.99),
+            "Subject m2": EmailExtraction(
+                is_job_related=True, confidence=0.95, company="Acme", position="SWE", status="applied"
+            ),
+        }
+    )
+
+    expunge_calls = []
+    original_expunge_all = db_session.expunge_all
+
+    def spy_expunge_all():
+        expunge_calls.append(1)
+        return original_expunge_all()
+
+    monkeypatch.setattr(db_session, "expunge_all", spy_expunge_all)
+
+    process_job(db_session, job, extractor)
+
+    assert len(expunge_calls) == 2  # once per page — 2 pages in this test
+
+    db_session.refresh(job)
+    assert job.status == "completed"
+    assert job.messages_seen == 2
+    assert job.messages_processed == 2
+
+
 def test_process_job_updates_the_heartbeat_while_processing_messages(
     db_session, user, monkeypatch
 ) -> None:
@@ -495,11 +539,21 @@ def test_enqueue_sync_uses_the_watermark_set_by_a_prior_successful_job(
     # here since this test drives process_job without going through claim_next_job.
     job.started_at = datetime(2026, 6, 15, tzinfo=timezone.utc)
     db_session.commit()
+    # Captured before process_job runs: process_job now expunges db_session's
+    # entire identity map at each page boundary and re-attaches only `job` and
+    # `connection` (see the memory-bounding fix in worker.py). `user` isn't one
+    # of those two, so it comes out the other side detached-and-expired; reading
+    # a stale `user.id` afterward would raise DetachedInstanceError trying to
+    # lazy-refresh it against a session it's no longer part of. Holding the
+    # plain UUID instead sidesteps that entirely, and matches how a real caller
+    # would use this function — nothing outside process_job keeps ORM object
+    # handles alive across it.
+    user_id = user.id
 
     monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: ([], None))
     process_job(db_session, job, _FakeExtractor({}))
 
-    next_job = sync_service.enqueue_sync(db_session, user.id)
+    next_job = sync_service.enqueue_sync(db_session, user_id)
 
     assert next_job.job_type == "incremental"
     assert next_job.window_start == date(2026, 6, 14)  # 06-15 minus the 1-day margin
