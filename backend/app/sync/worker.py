@@ -194,6 +194,21 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
             job.page_token = next_page_token
             db.commit()
 
+            # Bound this job's memory footprint to roughly one page's worth of
+            # SQLAlchemy-tracked objects rather than letting it grow with the
+            # job's total message count — found via a real Render OOM restart
+            # during a 300-message initial sync. expunge_all() drops every
+            # object this session has accumulated from its identity map (safe
+            # to garbage-collect); job and connection are the only two objects
+            # the rest of this function still needs, so they're immediately
+            # re-attached. The session itself stays open throughout, so their
+            # now-expired attributes correctly lazy-reload on next access
+            # rather than raising DetachedInstanceError (which WOULD happen if
+            # the session were closed instead of just having objects expunged).
+            db.expunge_all()
+            db.add(job)
+            db.add(connection)
+
             if next_page_token is None:
                 break
     except Exception as exc:
