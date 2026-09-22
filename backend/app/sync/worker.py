@@ -232,27 +232,38 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
     db.commit()
 
 
+def _run_one_tick(db: Session) -> SyncJob | None:
+    """One reap+claim+process cycle — shared by run_forever() (loops forever,
+    sleeping between empty ticks; used by local dev's separate
+    `python -m app.sync.worker` process, per CLAUDE.md's documented
+    workflow) and drain_once() below (loops until the queue is empty or a
+    time budget is hit, then returns; used by the Render Cron Job
+    entrypoint in production). Returns the claimed job, if any, so callers
+    can tell an empty tick (nothing to do) from a worked one."""
+    try:
+        reap_stale_jobs(db)
+    except Exception:
+        # A best-effort janitor must never block the primary work — roll
+        # back to a clean session, then log, and still attempt
+        # claim_next_job below in this same tick. Rollback-before-log
+        # matches process_job's own handler for the same reason: this
+        # message logs no ORM attributes today, but keeping the ordering
+        # uniform means it stays safe if one is ever added here.
+        db.rollback()
+        logger.exception("Stale-job reaper failed; continuing")
+    job = claim_next_job(db)
+    if job is not None:
+        process_job(db, job)
+    return job
+
+
 def run_forever(poll_interval: float = POLL_INTERVAL_SECONDS) -> None:
     while True:
         _record_poll()
         db = SessionLocal()
         job = None
         try:
-            try:
-                reap_stale_jobs(db)
-            except Exception:
-                # A best-effort janitor must never block the primary work —
-                # roll back to a clean session, then log, and still attempt
-                # claim_next_job below in this same tick. Rollback-before-log
-                # matches process_job's own handler above for the same
-                # reason: this message logs no ORM attributes today, but
-                # keeping the ordering uniform means it stays safe if one
-                # is ever added here.
-                db.rollback()
-                logger.exception("Stale-job reaper failed; continuing")
-            job = claim_next_job(db)
-            if job is not None:
-                process_job(db, job)
+            job = _run_one_tick(db)
         except Exception:
             logger.exception("Unhandled error in sync worker loop")
             db.rollback()
@@ -260,6 +271,38 @@ def run_forever(poll_interval: float = POLL_INTERVAL_SECONDS) -> None:
             db.close()
         if job is None:
             time.sleep(poll_interval)
+
+
+DRAIN_MAX_RUNTIME_SECONDS = 240.0
+
+
+def drain_once(max_runtime_seconds: float = DRAIN_MAX_RUNTIME_SECONDS) -> int:
+    """Processes queued sync jobs until none remain or max_runtime_seconds is
+    exceeded, then returns the number processed. Used by the Render Cron Job
+    entrypoint (app/sync/drain.py) — production no longer runs the worker
+    in-process alongside the API, nor as a separate always-on process there;
+    a Cron Job invokes this on a schedule instead, draining whatever's
+    queued and exiting. Local dev is unaffected — it keeps using
+    run_forever() as documented in CLAUDE.md's "Local dev environment"
+    section."""
+    start = time.monotonic()
+    processed = 0
+    while time.monotonic() - start < max_runtime_seconds:
+        _record_poll()
+        db = SessionLocal()
+        job = None
+        try:
+            job = _run_one_tick(db)
+        except Exception:
+            logger.exception("Unhandled error in drain loop")
+            db.rollback()
+        finally:
+            db.close()
+        if job is None:
+            return processed
+        processed += 1
+    logger.warning("drain_once hit its %.0fs time budget with jobs possibly still queued", max_runtime_seconds)
+    return processed
 
 
 if __name__ == "__main__":

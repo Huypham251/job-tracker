@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import delete, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.classifier.schemas import EmailExtraction
 from app.gmail import google_api
@@ -14,6 +14,7 @@ from app.sync.models import SyncJob
 from app.sync.worker import (
     _safe_error_message,
     claim_next_job,
+    drain_once,
     get_last_poll_at,
     process_job,
     reap_stale_jobs,
@@ -738,3 +739,118 @@ def test_get_last_poll_at_returns_the_recorded_timestamp(monkeypatch) -> None:
     fixed = datetime(2026, 1, 1, tzinfo=timezone.utc)
     monkeypatch.setattr(worker_module, "_last_poll_at", fixed)
     assert get_last_poll_at() == fixed
+
+
+def test_drain_once_processes_all_queued_jobs_and_returns_the_count(engine, monkeypatch) -> None:
+    import app.sync.worker as worker_module
+
+    # Uses the real `engine` fixture, not `db_session` — drain_once() creates
+    # its own real SessionLocal() sessions internally (exactly like
+    # run_forever() already does). app.db.session.SessionLocal is bound to
+    # settings.database_url (the dev database), which is a genuinely
+    # separate Postgres database from this `engine` fixture (bound to
+    # settings.database_url's name + "_test") — not just a separate
+    # connection to the same one. So drain_once()'s internal sessions are
+    # monkeypatched below to use this test engine instead, or they'd never
+    # see the rows this test commits. Mirrors the existing pattern in
+    # test_claim_next_job_skips_a_row_locked_by_another_connection (same
+    # file) for the "genuinely separate connection" part, and
+    # test_run_forever_reaps_stale_jobs_every_iteration (same file) for the
+    # "patch worker_module.SessionLocal" part. No GmailConnection rows are
+    # created, so each job takes process_job's fast "connection is None" ->
+    # "failed" path — this test is about drain_once's own looping/counting behavior,
+    # not full Gmail processing (already covered elsewhere).
+    #
+    # NOTE: each job needs its own user, not just its own row — sync_jobs
+    # has a partial unique index, uq_sync_jobs_user_active
+    # (UNIQUE(user_id) WHERE status IN ('queued','running')), enforcing at
+    # most one active job per user (see CLAUDE.md). Three queued jobs for
+    # the same user would violate that constraint on insert.
+    with engine.begin() as setup_conn:
+        user_ids = [
+            setup_conn.execute(
+                User.__table__.insert()
+                .values(
+                    google_sub=f"drain-test-sub-{i}",
+                    email=f"drain-test-{i}@example.com",
+                    name="Drain Test",
+                )
+                .returning(User.__table__.c.id)
+            ).scalar_one()
+            for i in range(3)
+        ]
+        job_ids = [
+            setup_conn.execute(
+                SyncJob.__table__.insert()
+                .values(user_id=user_id, job_type="initial", window_start=date(2026, 1, 1))
+                .returning(SyncJob.__table__.c.id)
+            ).scalar_one()
+            for user_id in user_ids
+        ]
+
+    try:
+        # app/db/session.py's module-level SessionLocal is bound to
+        # settings.database_url (the dev database), while the `engine`
+        # fixture above is bound to a genuinely separate database
+        # (settings.database_url's name + "_test", created/migrated by
+        # conftest.py) — two isolated Postgres databases, not just two
+        # connections to the same one. drain_once() calls SessionLocal()
+        # internally (necessarily, per its production Cron Job use), so
+        # without this patch it would query the dev database and never see
+        # the rows committed above via engine.begin(). Patching
+        # app.sync.worker.SessionLocal (the name worker.py imported into its
+        # own module namespace) to a sessionmaker bound to this test's real
+        # `engine` fixture is what makes drain_once's internal sessions see
+        # them. Mirrors how app/db/session.py itself constructs SessionLocal
+        # (same sessionmaker kwargs), just bound to the test engine instead
+        # of settings.database_url. monkeypatch reverts this automatically
+        # at test teardown, so there's no cross-test leakage risk.
+        test_session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+        monkeypatch.setattr(worker_module, "SessionLocal", test_session_factory)
+
+        processed = drain_once()
+
+        assert processed == 3
+        with engine.connect() as check_conn:
+            statuses = check_conn.execute(
+                SyncJob.__table__.select().where(SyncJob.__table__.c.id.in_(job_ids))
+            ).fetchall()
+            assert {row.status for row in statuses} == {"failed"}
+            assert all(row.error_message == "Gmail connection no longer exists" for row in statuses)
+    finally:
+        with engine.begin() as cleanup_conn:
+            cleanup_conn.execute(SyncJob.__table__.delete().where(SyncJob.__table__.c.id.in_(job_ids)))
+            cleanup_conn.execute(User.__table__.delete().where(User.__table__.c.id.in_(user_ids)))
+
+
+def test_drain_once_stops_at_its_time_budget_leaving_jobs_queued(engine, monkeypatch) -> None:
+    import app.sync.worker as worker_module
+
+    with engine.begin() as setup_conn:
+        user_id = setup_conn.execute(
+            User.__table__.insert()
+            .values(google_sub="drain-budget-sub", email="drain-budget@example.com", name="Drain Budget")
+            .returning(User.__table__.c.id)
+        ).scalar_one()
+        job_id = setup_conn.execute(
+            SyncJob.__table__.insert()
+            .values(user_id=user_id, job_type="initial", window_start=date(2026, 1, 1))
+            .returning(SyncJob.__table__.c.id)
+        ).scalar_one()
+
+    try:
+        test_session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+        monkeypatch.setattr(worker_module, "SessionLocal", test_session_factory)
+
+        processed = drain_once(max_runtime_seconds=0)
+
+        assert processed == 0
+        with engine.connect() as check_conn:
+            row = check_conn.execute(
+                SyncJob.__table__.select().where(SyncJob.__table__.c.id == job_id)
+            ).one()
+            assert row.status == "queued"
+    finally:
+        with engine.begin() as cleanup_conn:
+            cleanup_conn.execute(SyncJob.__table__.delete().where(SyncJob.__table__.c.id == job_id))
+            cleanup_conn.execute(User.__table__.delete().where(User.__table__.c.id == user_id))
