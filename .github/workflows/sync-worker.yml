@@ -1,0 +1,36 @@
+name: Sync Worker
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+      GOOGLE_CLIENT_ID: ${{ secrets.PROD_GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.PROD_GOOGLE_CLIENT_SECRET }}
+      GMAIL_TOKEN_ENCRYPTION_KEY: ${{ secrets.PROD_GMAIL_TOKEN_ENCRYPTION_KEY }}
+      SECRET_KEY: ${{ secrets.PROD_SECRET_KEY }}
+      CORS_ORIGINS: https://job-tracker-1-ldy2.onrender.com
+      FRONTEND_URL: https://job-tracker-1-ldy2.onrender.com
+      ENV: production
+      COOKIE_SECURE: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync --locked
+
+      - name: Drain sync queue
+        working-directory: backend
+        run: uv run python -m app.sync.drain
