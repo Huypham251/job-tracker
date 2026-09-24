@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from cryptography.fernet import Fernet
 
 from app.gmail import google_api, service
 from app.gmail.crypto import decrypt_token, encrypt_token
@@ -161,6 +162,51 @@ def test_disconnect_deletes_row_even_if_revoke_raises(db_session, user, monkeypa
 
     service.disconnect(db_session, user.id)
 
+    assert db_session.get(GmailConnection, connection.id) is None
+
+
+def _make_connection_encrypted_with_a_rotated_away_key(db_session, user) -> GmailConnection:
+    """A row written before GMAIL_TOKEN_ENCRYPTION_KEY was rotated: its tokens
+    were encrypted with a key the app no longer has, so decrypt_token raises
+    InvalidToken on them."""
+    old_key = Fernet(Fernet.generate_key())
+    connection = GmailConnection(
+        user_id=user.id,
+        google_email="alice@gmail.com",
+        access_token_encrypted=old_key.encrypt(b"old-access").decode(),
+        refresh_token_encrypted=old_key.encrypt(b"old-refresh").decode(),
+        token_expiry=datetime.now(timezone.utc) + timedelta(seconds=3600),
+        scope="https://www.googleapis.com/auth/gmail.readonly",
+    )
+    db_session.add(connection)
+    db_session.commit()
+    db_session.refresh(connection)
+    return connection
+
+
+def test_connect_reconnect_succeeds_after_encryption_key_rotation(db_session, user, monkeypatch) -> None:
+    _make_connection_encrypted_with_a_rotated_away_key(db_session, user)
+    revoked = []
+    monkeypatch.setattr(google_api, "revoke_token", lambda token: revoked.append(token))
+    monkeypatch.setattr(google_api, "get_profile", lambda token: {"emailAddress": "alice@gmail.com"})
+    new_token = {**FAKE_TOKEN, "refresh_token": "new-refresh", "access_token": "new-access"}
+
+    connection = service.connect(db_session, user.id, new_token)
+
+    assert revoked == []  # the old token is unreadable, so there's nothing to revoke
+    assert decrypt_token(connection.access_token_encrypted) == "new-access"
+    assert decrypt_token(connection.refresh_token_encrypted) == "new-refresh"
+    assert db_session.query(GmailConnection).filter_by(user_id=user.id).count() == 1
+
+
+def test_disconnect_deletes_row_after_encryption_key_rotation(db_session, user, monkeypatch) -> None:
+    connection = _make_connection_encrypted_with_a_rotated_away_key(db_session, user)
+    revoked = []
+    monkeypatch.setattr(google_api, "revoke_token", lambda token: revoked.append(token))
+
+    service.disconnect(db_session, user.id)
+
+    assert revoked == []
     assert db_session.get(GmailConnection, connection.id) is None
 
 

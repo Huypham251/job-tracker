@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+from cryptography.fernet import InvalidToken
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -16,6 +17,29 @@ logger = logging.getLogger(__name__)
 # Refresh a minute before the stored access token actually expires, rather
 # than racing expiry mid-request.
 REFRESH_BUFFER = timedelta(seconds=60)
+
+
+def _revoke_stored_refresh_token(connection: GmailConnection, user_id: UUID, action: str) -> None:
+    """Best-effort revoke of the grant a connection row holds, before that row
+    is overwritten (reconnect) or deleted (disconnect). Never fatal: a
+    lingering grant at Google is harmless, while failing here would leave the
+    user unable to reconnect or disconnect at all. The InvalidToken case is
+    what rotating GMAIL_TOKEN_ENCRYPTION_KEY produces for every existing row —
+    the old token is unreadable, so there's nothing we can revoke; the user
+    can still remove the stale grant from their Google account settings."""
+    try:
+        refresh_token = decrypt_token(connection.refresh_token_encrypted)
+    except InvalidToken:
+        logger.warning(
+            "Stored Gmail token for user %s is unreadable (encryption key rotated?); skipping revoke on %s",
+            user_id, action,
+        )
+        return
+    try:
+        google_api.revoke_token(refresh_token)
+    except google_api.GoogleApiError:
+        # A failed revoke leaves a stale grant at Google — logged, not fatal.
+        logger.warning("Failed to revoke Gmail token for user %s on %s", user_id, action)
 
 
 def get_connection(db: Session, user_id: UUID) -> GmailConnection | None:
@@ -40,15 +64,9 @@ def connect(db: Session, user_id: UUID, token: dict) -> GmailConnection:
         connection = GmailConnection(user_id=user_id)
         db.add(connection)
     else:
-        old_refresh_token = decrypt_token(connection.refresh_token_encrypted)
-        try:
-            google_api.revoke_token(old_refresh_token)
-        except google_api.GoogleApiError:
-            # A failed revoke leaves a stale grant at Google — logged, not
-            # fatal. We still proceed with the reconnect: overwriting our
-            # row with the new tokens matters more than a lagging revoke
-            # upstream.
-            logger.warning("Failed to revoke Gmail token for user %s on reconnect", user_id)
+        # Overwriting our row with the new tokens matters more than a lagging
+        # revoke upstream.
+        _revoke_stored_refresh_token(connection, user_id, "reconnect")
 
     connection.google_email = profile["emailAddress"]
     connection.access_token_encrypted = encrypt_token(access_token)
@@ -95,14 +113,10 @@ def disconnect(db: Session, user_id: UUID) -> None:
     if connection is None:
         raise GmailNotConnected(user_id)
 
-    refresh_token = decrypt_token(connection.refresh_token_encrypted)
-    try:
-        google_api.revoke_token(refresh_token)
-    except google_api.GoogleApiError:
-        # A failed revoke leaves a stale grant at Google — logged, not
-        # fatal. We still delete our row: a disconnect button that doesn't
-        # disconnect locally is worse than a lagging revoke upstream.
-        logger.warning("Failed to revoke Gmail token for user %s", user_id)
+    # We still delete our row even if the revoke can't happen: a disconnect
+    # button that doesn't disconnect locally is worse than a lagging revoke
+    # upstream.
+    _revoke_stored_refresh_token(connection, user_id, "disconnect")
 
     db.delete(connection)
     db.commit()
