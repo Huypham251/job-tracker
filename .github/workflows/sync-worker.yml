@@ -5,9 +5,21 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
+# One drain at a time — production has only ever been verified with a single
+# worker. Never cancel-in-progress: killing a drain mid-job leaves that job
+# "running" until a later run's reaper requeues it, costing it an attempt.
+concurrency:
+  group: sync-worker
+  cancel-in-progress: false
+
 jobs:
   drain:
     runs-on: ubuntu-latest
+    # drain_once's 240s budget is only checked between jobs; one job (e.g. a
+    # 180-day initial backfill, ~0.7s/message in prod) can run over an hour.
+    # 120 leaves headroom for that while still cutting off a genuinely hung
+    # run well before GitHub's 360-minute default.
+    timeout-minutes: 120
     env:
       DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
       GOOGLE_CLIENT_ID: ${{ secrets.PROD_GOOGLE_CLIENT_ID }}
