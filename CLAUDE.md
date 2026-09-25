@@ -12,7 +12,7 @@ Phases 1–10 are complete and merged to `main`, and the app is **deployed to pr
 Phase 10's hardening, 2026-09-25). Phase 5 was manually verified end-to-end
 against a real Gmail account (2026-09-17) — see "Manual testing findings" below — and
 Phase 6 was manually verified the same way (2026-09-20) — see "Phase 6 manual testing
-findings" below. Backend: 452/452 tests passing (281 after Phase 7; Phase 8 added
+findings" below. Backend: 458/458 tests passing (281 after Phase 7; Phase 8 added
 health/heartbeat, in-process-worker, drain-entrypoint, workflow-config and
 key-rotation tests; Phase 9 added lane, retry-wait, dispatch, re-kick, single-fetch
 and log-privacy tests; Phase 10 added error-classification, reauth, slicing, orphan
