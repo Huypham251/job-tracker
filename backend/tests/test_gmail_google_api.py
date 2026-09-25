@@ -95,7 +95,7 @@ def _b64(text: str) -> str:
     return base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
 
 
-def test_get_message_body_extracts_plain_text_part(monkeypatch) -> None:
+def test_get_message_extracts_body_extracts_plain_text_part(monkeypatch) -> None:
     payload = {
         "payload": {
             "mimeType": "multipart/alternative",
@@ -106,18 +106,18 @@ def test_get_message_body_extracts_plain_text_part(monkeypatch) -> None:
         }
     }
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
-    assert google_api.get_message_body("token", "m1") == "Thanks for applying to Acme."
+    assert google_api.get_message("token", "m1")[1] == "Thanks for applying to Acme."
 
 
-def test_get_message_body_falls_back_to_html_and_strips_tags(monkeypatch) -> None:
+def test_get_message_extracts_body_falls_back_to_html_and_strips_tags(monkeypatch) -> None:
     payload = {
         "payload": {"mimeType": "text/html", "body": {"data": _b64("<p>Hello <b>World</b></p>")}}
     }
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
-    assert google_api.get_message_body("token", "m1") == "Hello World"
+    assert google_api.get_message("token", "m1")[1] == "Hello World"
 
 
-def test_get_message_body_strips_style_and_script_block_contents(monkeypatch) -> None:
+def test_get_message_extracts_body_strips_style_and_script_block_contents(monkeypatch) -> None:
     raw = (
         "<html><head>"
         "<style>.unsubscribe-link { color: blue; font-weight: bold; }</style>"
@@ -126,13 +126,13 @@ def test_get_message_body_strips_style_and_script_block_contents(monkeypatch) ->
     )
     payload = {"payload": {"mimeType": "text/html", "body": {"data": _b64(raw)}}}
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
-    result = google_api.get_message_body("token", "m1")
+    result = google_api.get_message("token", "m1")[1]
     assert result == "Thanks for applying to Acme."
     assert "unsubscribe-link" not in result
     assert "trackClick" not in result
 
 
-def test_get_message_body_strips_quoted_replies(monkeypatch) -> None:
+def test_get_message_extracts_body_strips_quoted_replies(monkeypatch) -> None:
     raw = (
         "Please see below.\n\n"
         "On Mon, Jan 1, 2026 at 1:00 PM wrote:\n"
@@ -141,27 +141,27 @@ def test_get_message_body_strips_quoted_replies(monkeypatch) -> None:
     )
     payload = {"payload": {"mimeType": "text/plain", "body": {"data": _b64(raw)}}}
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
-    assert google_api.get_message_body("token", "m1") == "Please see below."
+    assert google_api.get_message("token", "m1")[1] == "Please see below."
 
 
-def test_get_message_body_truncates_long_bodies(monkeypatch) -> None:
+def test_get_message_extracts_body_truncates_long_bodies(monkeypatch) -> None:
     long_text = "a" * 5000
     payload = {"payload": {"mimeType": "text/plain", "body": {"data": _b64(long_text)}}}
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
-    result = google_api.get_message_body("token", "m1")
+    result = google_api.get_message("token", "m1")[1]
     assert len(result) == google_api.BODY_MAX_CHARS
 
 
-def test_get_message_body_returns_empty_string_when_no_text_part(monkeypatch) -> None:
+def test_get_message_extracts_body_returns_empty_string_when_no_text_part(monkeypatch) -> None:
     payload = {"payload": {"mimeType": "image/png", "body": {"data": _b64("binarydata")}}}
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
-    assert google_api.get_message_body("token", "m1") == ""
+    assert google_api.get_message("token", "m1")[1] == ""
 
 
-def test_get_message_body_raises_on_error(monkeypatch) -> None:
+def test_get_message_raises_on_error(monkeypatch) -> None:
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(400, {}))
     with pytest.raises(google_api.GoogleApiError):
-        google_api.get_message_body("token", "m1")
+        google_api.get_message("token", "m1")[1]
 
 
 def test_list_message_ids_page_returns_ids_and_next_page_token(monkeypatch) -> None:
@@ -208,3 +208,61 @@ def test_list_message_ids_page_raises_on_error(monkeypatch) -> None:
         google_api.list_message_ids_page(
             "token", query="after:2026/01/01", page_token=None, max_results=100
         )
+
+
+def test_get_message_makes_one_full_fetch_and_returns_summary_and_body(monkeypatch) -> None:
+    calls = []
+    payload = {
+        "id": "m1",
+        "snippet": "Thanks for applying",
+        "payload": {
+            "mimeType": "text/plain",
+            "headers": [
+                {"name": "Subject", "value": "Your application"},
+                {"name": "From", "value": "jobs@acme.com"},
+                {"name": "Date", "value": "Mon, 1 Sep 2026 10:00:00 +0000"},
+                {"name": "X-Other", "value": "ignored"},
+            ],
+            "body": {"data": _b64("Hello there")},
+        },
+    }
+
+    def fake_get(url, headers, params, timeout):
+        calls.append((url, params))
+        return _FakeResponse(200, payload)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    summary, body = google_api.get_message("token", "m1")
+
+    assert calls == [(f"{google_api.GMAIL_API_BASE}/messages/m1", {"format": "full"})]
+    assert summary == {
+        "id": "m1",
+        "subject": "Your application",
+        "from_": "jobs@acme.com",
+        "date": "Mon, 1 Sep 2026 10:00:00 +0000",
+        "snippet": "Thanks for applying",
+    }
+    assert body == "Hello there"
+
+
+def test_get_message_summary_matches_get_message_for_the_same_payload(monkeypatch) -> None:
+    payload = {
+        "id": "m1",
+        "snippet": "s",
+        "payload": {"headers": [
+            {"name": "Subject", "value": "S"},
+            {"name": "From", "value": "F"},
+            {"name": "Date", "value": "D"},
+        ]},
+    }
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
+    assert google_api.get_message_summary("t", "m1") == google_api.get_message("t", "m1")[0]
+
+
+def test_get_message_uses_the_requested_id_when_the_payload_has_none(monkeypatch) -> None:
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, {"payload": {}}))
+    summary, body = google_api.get_message("t", "m9")
+    assert summary["id"] == "m9"
+    assert summary["subject"] == "" and summary["snippet"] == ""
+    assert body == ""

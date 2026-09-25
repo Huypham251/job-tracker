@@ -169,8 +169,7 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
                     continue
 
                 try:
-                    summary = google_api.get_message_summary(access_token, message_id)
-                    body = google_api.get_message_body(access_token, message_id)
+                    summary, body = google_api.get_message(access_token, message_id)
                 except GoogleApiError:
                     logger.warning("Skipping message %s: fetch failed", message_ref(message_id))
                     job.failed_count += 1

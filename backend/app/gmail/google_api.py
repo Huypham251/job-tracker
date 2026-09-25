@@ -88,16 +88,24 @@ def list_message_ids_page(
     return ids, payload.get("nextPageToken")
 
 
+def _summary_from_payload(payload: dict, message_id: str) -> dict:
+    headers = {h["name"]: h["value"] for h in payload.get("payload", {}).get("headers", [])}
+    return {
+        "id": payload.get("id", message_id),
+        "subject": headers.get("Subject", ""),
+        "from_": headers.get("From", ""),
+        "date": headers.get("Date", ""),
+        "snippet": payload.get("snippet", ""),
+    }
+
+
 def get_message_summary(access_token: str, message_id: str) -> dict:
     response = httpx.get(
         f"{GMAIL_API_BASE}/messages/{message_id}",
         headers={"Authorization": f"Bearer {access_token}"},
-        # format=metadata + an explicit header allowlist — this function only
-        # needs headers/snippet for display purposes (the Gmail test-fetch
-        # endpoint, and ProcessedMessage's subject/sender/snippet fields).
-        # get_message_body() below fetches the full body separately, only
-        # when the pipeline needs it for classification (see the Phase 4
-        # spec §11, data minimization — the body itself is never persisted).
+        # format=metadata + an explicit header allowlist — used only by the
+        # Phase 3 display endpoint ("Fetch recent messages"), which never
+        # needs a body. The sync worker uses get_message() below instead.
         params={
             "format": "metadata",
             "metadataHeaders": ["Subject", "From", "Date"],
@@ -106,15 +114,7 @@ def get_message_summary(access_token: str, message_id: str) -> dict:
     )
     if response.status_code != 200:
         raise GoogleApiError(f"message fetch failed: {response.status_code}")
-    payload = response.json()
-    headers = {h["name"]: h["value"] for h in payload.get("payload", {}).get("headers", [])}
-    return {
-        "id": payload["id"],
-        "subject": headers.get("Subject", ""),
-        "from_": headers.get("From", ""),
-        "date": headers.get("Date", ""),
-        "snippet": payload.get("snippet", ""),
-    }
+    return _summary_from_payload(response.json(), message_id)
 
 
 def _decode_part(data: str) -> str:
@@ -157,10 +157,23 @@ def _clean_text(raw: str, *, is_html: bool) -> str:
     return text[:BODY_MAX_CHARS]
 
 
-def get_message_body(access_token: str, message_id: str) -> str:
-    # format=full (not Phase 3's format=metadata) — reliable extraction genuinely
-    # needs body content. What's sent onward to the classifier is still minimized:
-    # cleaned plain text only, truncated, never the raw MIME structure or attachments.
+def _body_from_payload(payload: dict) -> str:
+    found = _find_text_part(payload.get("payload", {}))
+    if found is None:
+        return ""
+    mime_type, text = found
+    return _clean_text(text, is_html=(mime_type == "text/html"))
+
+
+def get_message(access_token: str, message_id: str) -> tuple[dict, str]:
+    """One format=full fetch for the sync worker, returning (summary, body).
+    The headers and snippet format=metadata would give are in the same
+    payload, so fetching them separately doubled the Gmail round-trips per
+    message (Phase 9). format=full because reliable extraction genuinely
+    needs the body — but what's sent onward to the classifier is still
+    minimized: cleaned plain text only, truncated, never the raw MIME
+    structure or attachments, and the body itself is never persisted
+    (Phase 4 spec §11)."""
     response = httpx.get(
         f"{GMAIL_API_BASE}/messages/{message_id}",
         headers={"Authorization": f"Bearer {access_token}"},
@@ -168,10 +181,6 @@ def get_message_body(access_token: str, message_id: str) -> str:
         timeout=_TIMEOUT,
     )
     if response.status_code != 200:
-        raise GoogleApiError(f"message body fetch failed: {response.status_code}")
-
-    found = _find_text_part(response.json().get("payload", {}))
-    if found is None:
-        return ""
-    mime_type, text = found
-    return _clean_text(text, is_html=(mime_type == "text/html"))
+        raise GoogleApiError(f"message fetch failed: {response.status_code}")
+    payload = response.json()
+    return _summary_from_payload(payload, message_id), _body_from_payload(payload)

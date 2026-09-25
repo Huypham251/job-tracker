@@ -162,8 +162,7 @@ def test_process_job_pages_through_gmail_and_processes_each_message(
         return pages.pop(0)
 
     monkeypatch.setattr(google_api, "list_message_ids_page", fake_list_page)
-    monkeypatch.setattr(google_api, "get_message_summary", lambda token, mid: _make_summary(mid, f"Subject {mid}"))
-    monkeypatch.setattr(google_api, "get_message_body", lambda token, mid: "body")
+    monkeypatch.setattr(google_api, "get_message", lambda token, mid: (_make_summary(mid, f"Subject {mid}"), "body"))
     extractor = _FakeExtractor(
         {
             "Subject m1": EmailExtraction(is_job_related=False, confidence=0.99),
@@ -202,8 +201,7 @@ def test_process_job_expunges_the_session_between_pages_to_bound_memory_growth(
         return pages.pop(0)
 
     monkeypatch.setattr(google_api, "list_message_ids_page", fake_list_page)
-    monkeypatch.setattr(google_api, "get_message_summary", lambda token, mid: _make_summary(mid, f"Subject {mid}"))
-    monkeypatch.setattr(google_api, "get_message_body", lambda token, mid: "body")
+    monkeypatch.setattr(google_api, "get_message", lambda token, mid: (_make_summary(mid, f"Subject {mid}"), "body"))
     extractor = _FakeExtractor(
         {
             "Subject m1": EmailExtraction(is_job_related=False, confidence=0.99),
@@ -248,8 +246,7 @@ def test_process_job_updates_the_heartbeat_while_processing_messages(
         return pages.pop(0)
 
     monkeypatch.setattr(google_api, "list_message_ids_page", fake_list_page)
-    monkeypatch.setattr(google_api, "get_message_summary", lambda token, mid: _make_summary(mid, f"Subject {mid}"))
-    monkeypatch.setattr(google_api, "get_message_body", lambda token, mid: "body")
+    monkeypatch.setattr(google_api, "get_message", lambda token, mid: (_make_summary(mid, f"Subject {mid}"), "body"))
     extractor = _FakeExtractor(
         {
             "Subject m1": EmailExtraction(is_job_related=False, confidence=0.99),
@@ -282,8 +279,7 @@ def test_process_job_checkpoints_page_token_after_each_page(db_session, user, mo
         return ([], None)
 
     monkeypatch.setattr(google_api, "list_message_ids_page", fake_list_page)
-    monkeypatch.setattr(google_api, "get_message_summary", lambda token, mid: _make_summary(mid, "Newsletter"))
-    monkeypatch.setattr(google_api, "get_message_body", lambda token, mid: "body")
+    monkeypatch.setattr(google_api, "get_message", lambda token, mid: (_make_summary(mid, "Newsletter"), "body"))
     extractor = _FakeExtractor({"Newsletter": EmailExtraction(is_job_related=False, confidence=0.99)})
 
     process_job(db_session, job, extractor)
@@ -310,7 +306,7 @@ def test_process_job_skips_messages_already_processed_by_an_earlier_attempt(
     monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["m1"], None))
     calls = []
     monkeypatch.setattr(
-        google_api, "get_message_summary", lambda token, mid: calls.append(mid) or _make_summary(mid, "x")
+        google_api, "get_message", lambda token, mid: calls.append(mid) or (_make_summary(mid, "x"), "body")
     )
     extractor = _FakeExtractor({})
 
@@ -332,7 +328,7 @@ def test_process_job_fails_a_message_on_fetch_error_without_failing_the_job(
 
     monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["m1"], None))
     monkeypatch.setattr(
-        google_api, "get_message_summary",
+        google_api, "get_message",
         lambda token, mid: (_ for _ in ()).throw(google_api.GoogleApiError("boom")),
     )
     extractor = _FakeExtractor({})
@@ -1073,7 +1069,7 @@ def test_fetch_failure_log_line_does_not_contain_the_raw_message_id(
     def failing_fetch(token, mid):
         raise google_api.GoogleApiError("boom")
 
-    monkeypatch.setattr(google_api, "get_message_summary", failing_fetch)
+    monkeypatch.setattr(google_api, "get_message", failing_fetch)
     # conftest.py's Alembic run calls logging.config.fileConfig, which disables
     # every logger that already exists (including this one) — re-enable it so
     # caplog can see the line this test is about.
