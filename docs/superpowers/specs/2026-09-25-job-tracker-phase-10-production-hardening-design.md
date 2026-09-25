@@ -545,3 +545,70 @@ The Phase 9 dispatch path (`POST /gmail/sync` → background `request_worker`) a
 split; the queue, partial unique index, `FOR UPDATE SKIP LOCKED` claiming, backoff
 formula, 15-minute reaper and idempotency; the classifier, matching, trust model,
 review queue and manual CRUD; the $0 hosting footprint.
+
+## 11. CP0 findings — Google consent screen (2026-09-25)
+
+Read-only. Nothing in Google Cloud was changed.
+
+### 11.1 Current console state (recorded by the maintainer)
+
+| Setting | Value |
+|---|---|
+| Publishing status | **Testing** |
+| User type | **External** |
+| OAuth user cap | 1 user (1 test, 0 other) of **100**, counted over the app's whole lifetime |
+| Test users | 1 (the maintainer) |
+| "Publish app" | **Disabled**: *"To publish your app, you must complete your configuration on the Branding page."* |
+| Branding: set | App name "Job Tracker Dev", user support email, developer contact email, authorized domains `job-tracker-lds1.onrender.com` and `job-tracker-1-ldy2.onrender.com` |
+| Branding: empty | App logo, **application home page**, **privacy policy link**, **terms of service link** |
+
+### 11.2 What Google's current docs say (fetched 2026-09-25)
+
+- **Testing-mode refresh tokens:** *"issued a refresh token expiring in 7 days, unless the
+  only OAuth scopes requested are a subset of name, email address, and user profile."*
+  This app requests `gmail.readonly`, so it's the cause of the weekly reconnects.
+- **Other reasons a refresh token stops working** (they apply in any publishing status,
+  and CP2 handles all of them the same way): *"The user has revoked your app's access"*;
+  *"has not been used for six months"*; *"The user changed passwords and the refresh token
+  contains Gmail scopes"*; the per-account limit on live refresh tokens.
+- `gmail.readonly` is a **restricted** scope. Restricted scopes normally need
+  verification **and** an annual security assessment.
+- **Exemption:** *"Personal Use apps — If the app is for your personal use (fewer than 100
+  users)."* Unverified apps show the "unverified app" screen, and users can click through
+  it; the cap is *"100 new users in total"*.
+- **Branding links:** *"These links are required for all external production apps."*
+  (home page, privacy policy, terms of service). *"The Privacy Policy should be hosted
+  within the domain that hosts your homepage"*; the home page *"must be hosted on a
+  verified domain you own."*
+- **Authorized domains:** `onrender.com` **is on the Public Suffix List**, so each Render
+  subdomain is its own "top private domain". That's why the two app subdomains are
+  accepted, and a subdomain could be verified in Google Search Console.
+- **Not documented:** what happens to refresh tokens issued during Testing when the
+  status changes. Assume they keep their 7-day expiry, so plan on one reconnect after
+  publishing.
+
+### 11.3 Options
+
+| | (a) Stay in Testing | (b) Publish, unverified, personal use | (c) Full verification |
+|---|---|---|---|
+| Weekly reconnect | Yes: one click, keeps history (CP2); monitor emails when it happens (CP4) | No (still needed after revocation, password change or 6 months unused) | No |
+| Who can sign in | Listed test users only (Google enforces it) | **Any Google account**, so the CP7 app allowlist is mandatory first | Any Google account |
+| Warning screen | Testing notice | "Google hasn't verified this app" on Connect Gmail | None |
+| New work beyond the approved scope | None | **Privacy-policy and terms pages** on the frontend domain, a **home page** link, possibly **Search Console domain verification** for `job-tracker-1-ldy2.onrender.com`, the CP7 allowlist, and Google Cloud changes | All of (b) + a submission and an **annual third-party security assessment (CASA)** |
+| Cost | $0 | $0 (hours of work, plus a policy text to maintain) | Assessment fees, disproportionate for a personal project |
+| Risk | None new | Google could still refuse or limit a restricted scope; the allowlist becomes the only sign-in gate | Review and assessment effort |
+
+### 11.4 Recommendation
+
+**(a) for Phase 10, with (b) recorded as a scoped future option.** The approved
+Phase 10 scope assumed (b) needed only an app-side allowlist. The console shows that
+publishing is **blocked until privacy-policy, terms and home-page links exist on a domain
+we control**, which means new frontend pages and possibly domain verification. That's
+product/legal content, outside a hardening phase. CP2 already reduces (a)'s cost to one
+Reconnect click a week, with no loss of sync history, and CP4 emails the maintainer when
+it's needed.
+
+If (b) is chosen instead, CP7 grows to: the app allowlist → privacy-policy and terms
+pages on the static site → Branding links filled in → (if the console demands it) Search
+Console verification of `job-tracker-1-ldy2.onrender.com` → **stop for approval** →
+Publish → one reconnect → a sync after 8 or more days succeeds without reauthorization.
