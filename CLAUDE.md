@@ -6,15 +6,17 @@ a spec — the specs under `docs/superpowers/specs/` and plans under
 
 ## Status
 
-Phases 1–9 are complete and merged to `main`, and the app is **deployed to production**
-(Render + Neon + GitHub Actions, $0/month — see "Phase 8 results" and "Phase 9 results"
-below; production paths verified end-to-end 2026-09-24). Phase 5 was manually verified end-to-end
+Phases 1–10 are complete and merged to `main`, and the app is **deployed to production**
+(Render + Neon + GitHub Actions, $0/month — see "Phase 8 results", "Phase 9 results" and
+"Phase 10 results" below; production paths verified end-to-end 2026-09-24 and, for
+Phase 10's hardening, 2026-09-25). Phase 5 was manually verified end-to-end
 against a real Gmail account (2026-09-17) — see "Manual testing findings" below — and
 Phase 6 was manually verified the same way (2026-09-20) — see "Phase 6 manual testing
-findings" below. Backend: 344/344 tests passing (281 after Phase 7; Phase 8 added
+findings" below. Backend: 452/452 tests passing (281 after Phase 7; Phase 8 added
 health/heartbeat, in-process-worker, drain-entrypoint, workflow-config and
 key-rotation tests; Phase 9 added lane, retry-wait, dispatch, re-kick, single-fetch
-and log-privacy tests).
+and log-privacy tests; Phase 10 added error-classification, reauth, slicing, orphan
+sweep, monitor, rate-limit and failure-injection tests — 344 after Phase 9).
 Frontend:
 `tsc -b` clean, `oxlint` clean (0 errors, 3 pre-existing warnings in
 `AuthContext.tsx`/`useApplications.ts`, unrelated to any phase and not touched by any of
@@ -59,6 +61,13 @@ them). Working tree clean, no uncommitted changes.
   waited for within the same run, each Gmail message is fetched once instead of
   twice, message IDs are kept out of the public worker logs, and the Sync panel
   shows "Starting…" vs "Syncing…" with a Retry. See "Phase 9 results".
+- Phase 10: production hardening & observability, no product features — expired/revoked
+  Gmail access is a clear, one-click "Reconnect Gmail" state (no retries, history kept);
+  network blips no longer cost a job an attempt; long jobs are **time-sliced** and resume
+  in a new run; orphaned jobs are recovered at drain start; a scheduled **monitor**
+  workflow whose failed run emails the owner; per-user rate limits; API docs off in
+  production; SHA-pinned actions; static-site security headers incl. an enforcing CSP.
+  The Google consent screen deliberately stays in Testing. See "Phase 10 results".
 
 **Read `2026-09-15-job-tracker-phase-4-pipeline-design.md` for the pipeline architecture
 that's still current (matching, trust model, DB schema, `/pipeline/review*` API,
@@ -70,7 +79,10 @@ whichever of the others changed their original decisions. For production,
 secrets, OAuth and CI — but its §3.3 in-process worker design was superseded during
 deployment (banner at its top); "Phase 8 results" below is the current truth for
 hosting. **For how syncs are triggered and run today, read
-`2026-09-24-job-tracker-phase-9-on-demand-sync-design.md` and "Phase 9 results".**
+`2026-09-24-job-tracker-phase-9-on-demand-sync-design.md` and "Phase 9 results"; for
+slicing, reauth, monitoring, rate limits and headers, read
+`2026-09-25-job-tracker-phase-10-production-hardening-design.md` (its §11 records the
+Google consent-screen investigation) and "Phase 10 results".**
 
 ## Architecture
 
@@ -79,8 +91,13 @@ backend/app/
 ├── applications/    Phase 1 — CRUD, source column ("manual"|"gmail")
 ├── auth/            Phase 2 — Google OAuth login, JWT cookie sessions
 ├── gmail/            Phase 3 — connection (OAuth), message fetch; Phase 5 added
-│   ├── google_api.py    paginated/date-bounded listing (list_message_ids_page)
-│   └── service.py         get_valid_access_token (refreshes on demand)
+│   ├── google_api.py    paginated/date-bounded listing (list_message_ids_page);
+│   │                      Phase 10: GoogleApiError.status_code (None = network
+│   │                      error), GmailAuthError (invalid_grant / 401)
+│   ├── exceptions.py      Phase 10: GmailReauthRequired, REAUTH_CODE/MESSAGE
+│   └── service.py         get_valid_access_token (refreshes on demand; unreadable
+│                            stored token → GmailAuthError), mark_reauth_required;
+│                            connect() clears reauth_required_at, keeps the watermark
 ├── classifier/       Phase 4b — local rule-based classification/extraction
 │   ├── text.py        normalization, sender-domain/display-name parsing
 │   ├── patterns.py     weighted phrase tables, ATS-domain lists, tunable constants
@@ -112,14 +129,20 @@ backend/app/
 │   │                            workflow_dispatch for sync-<job_type>.yml; never raises
 │   ├── worker.py                 claim_next_job / reap_stale_jobs (FOR UPDATE SKIP
 │   │                               LOCKED; optional job_type lane filter), process_job
-│   │                               (pagination + retry/backoff), _run_one_tick (shared
-│   │                               reap+claim+process), run_forever (local dev, all
-│   │                               lanes: `uv run python -m app.sync.worker`),
-│   │                               drain_once (drain one lane until idle or its budget;
-│   │                               waits for near-term retries), LANE_DRAIN_BUDGET_SECONDS
+│   │                               (pagination + retry/backoff; Phase 10: deadline →
+│   │                               "yielded", returns a JobOutcome, reauth fail-fast,
+│   │                               per-message single retry), sweep_orphans (Phase 10),
+│   │                               _run_one_tick, run_forever (local dev, all lanes:
+│   │                               `uv run python -m app.sync.worker`), drain_once
+│   │                               (one lane until idle or its slice; waits for
+│   │                               near-term retries; returns DrainResult), LANES,
+│   │                               lane_slice_seconds
 │   ├── drain.py                    production entrypoint,
 │   │                               `python -m app.sync.drain --lane <lane>`, run by the
-│   │                               lane workflows; silences httpx request logging
+│   │                               lane workflows; silences httpx request logging;
+│   │                               writes requeued=true|false to $GITHUB_OUTPUT
+│   ├── monitor.py                  Phase 10 — M1–M4 checks, exit 1 = alert,
+│   │                               `python -m app.sync.monitor`
 │   └── inprocess.py                Phase 8 — optional worker thread inside the API
 │                                   (RUN_WORKER_IN_PROCESS); OFF in production, see
 │                                   "Phase 8 results"
@@ -127,8 +150,12 @@ backend/app/
 │                     (in-process heartbeat — always 503 in production, by design now)
 ├── db/session.py     engine with pool_pre_ping=True (Phase 8, for Neon)
 ├── core/privacy.py   Phase 9 — message_ref(id): hashed stand-in for Gmail message IDs in logs
+├── core/ratelimit.py Phase 10 — in-memory fixed-window limiter, limit_per_user / limit_per_ip
+├── db/session.py     build_engine(): pool_pre_ping + hide_parameters (Phase 10)
 └── core/config.py    Settings — gmail_sync_backfill_days, sync_stale_job_threshold_minutes,
-                      run_worker_in_process, sync_dispatch_token/_repository/_ref
+                      run_worker_in_process, sync_dispatch_token/_repository/_ref,
+                      Phase 10: sync_initial/incremental_slice_seconds (1500/1200),
+                      sync_orphan_threshold_seconds (120), sync_dispatch_token_expires_on
 
 .github/workflows/
 ├── ci.yml            Phase 8 — backend pytest + evaluation.compare; frontend tsc/oxlint/
@@ -136,23 +163,32 @@ backend/app/
 ├── sync-incremental.yml  Phase 9 — incremental lane: workflow_dispatch (from the API)
 │                         + cron */15 fallback, concurrency "sync-incremental",
 │                         timeout 30 min, drain budget 20 min
-└── sync-initial.yml      Phase 9 — initial-import lane: same triggers, concurrency
-                          "sync-initial", timeout 120 min, budget 100 min. Both use the
-                          PROD_* repo secrets and a read-only GITHUB_TOKEN; they
-                          replaced Phase 8's single sync-worker.yml
+├── sync-initial.yml      Phase 9 — initial-import lane: same triggers, concurrency
+│                         "sync-initial". Phase 10: slice 25 min / timeout 40 min
+│                         (incremental: 20 / 30); slice overridable by a repo variable
+│                         of the same name; GITHUB_TOKEN gets actions: write for the
+│                         final "continue a paused job" self re-dispatch step
+└── sync-monitor.yml      Phase 10 — hourly-target cron + dispatch; only
+                          PROD_DATABASE_URL (other settings are placeholders);
+                          SYNC_DISPATCH_TOKEN_EXPIRES_ON is set here. All workflows pin
+                          actions to commit SHAs
 
 frontend/src/
 ├── components/ApplicationsPage.tsx   dashboard shell: Gmail panel, SyncPanel,
 │                                      ReviewQueue, add/edit form, applications list
 ├── components/SyncPanel.tsx            "Sync Gmail" button, polls job status,
 │                                          shows progress/summary, resumes polling on
-│                                          page refresh via GET /gmail/sync/latest
+│                                          page refresh via GET /gmail/sync/latest;
+│                                          Phase 10: "(continuing…)" for a paused job,
+│                                          Reconnect link on gmail_reauth_required
 ├── components/ReviewQueue.tsx          "Needs review" section, Approve/Edit/Reject;
 │                                          takes a refreshSignal prop (bumped on sync
 │                                          completion/failure) so new items appear
 │                                          without a manual reload
-└── components/GmailPanel.tsx           Connect Gmail, Fetch recent messages
-                                           (Phase 3 display-only test view, untouched)
+├── components/GmailPanel.tsx           Connect Gmail, Fetch recent messages
+│                                          (Phase 3 display-only test view); Phase 10:
+│                                          amber "Reconnect Gmail" notice
+└── api/http.ts                           Phase 10: ApiError carries status + code
 ```
 
 **The extractor swap validated the original abstraction**: `app/pipeline/` needed only
@@ -211,11 +247,33 @@ sourced (paginated, bounded, resumable instead of a flat top-20 fetch).
   unique index, `UNIQUE(user_id) WHERE status IN ('queued','running')`, is what makes
   "only one active sync per user" a DB-enforced guarantee rather than an app-level race.
 - **Retry/backoff**: a page-level (not per-message) `GoogleApiError`, or in fact any
-  unexpected exception, increments `SyncJob.attempts`; under `max_attempts` (default 3)
+  unexpected exception except a reauth failure (below), increments `SyncJob.attempts`; under `max_attempts` (default 3)
   it requeues with backoff `min(30 * 2**attempts, 3600)` seconds and *keeps* `page_token`
   so the retry resumes mid-pagination; at `max_attempts` it becomes permanently `failed`.
   Per-message failures (one bad email) remain non-fatal to the job, unchanged since
-  Phase 4 — only counted in `failed_count`.
+  Phase 4 — only counted in `failed_count`. Phase 10: a per-message 429/5xx/network
+  error is retried once after 2s first (a skipped message older than the next
+  incremental window is never seen again), and network errors are `GoogleApiError`
+  now instead of escaping to the job level.
+- **Reauthorization is terminal, not retried (Phase 10).** `GmailAuthError` (refresh
+  `invalid_grant`, any Gmail 401, or a stored token the current encryption key can't
+  read) fails the job immediately with `error_code="gmail_reauth_required"`,
+  `attempts` untouched, and sets `GmailConnection.reauth_required_at`. While set,
+  `POST /gmail/sync` and `GET /gmail/messages` return **403** with that code (403, not
+  409 — the frontend reads a 409 body as the active job). `connect()` clears it and
+  keeps `last_synced_message_date`, so Reconnect → next sync is incremental.
+  `invalid_client` (our own client secret) stays generic on purpose.
+- **Time-sliced jobs (Phase 10).** `process_job(..., deadline=)` checks the deadline
+  only after a page's `page_token` commit (every message on it is stored or counted);
+  past it, with pages left, the job goes back to `queued` with `next_attempt_at=now`,
+  **no attempt used**, `started_at`/counters kept → `"yielded"`. The drain stops, writes
+  `requeued=true`, and the lane workflow runs `gh workflow run` on itself (GITHUB_TOKEN;
+  concurrency queues it). A job always makes at least one page of progress per slice.
+- **Orphan sweep (Phase 10).** At lane-drain start, `sweep_orphans` requeues that lane's
+  `running` jobs with no commit for 120s — safe only because each lane's workflow
+  `concurrency` allows one run, so it's never used by `run_forever`/in-process. If a
+  too-fresh `running` job exists, the drain waits out the rest of the threshold once and
+  sweeps again. Orphans use an attempt (crash loops end) but skip backoff.
 - **Stale-job reaper** (`worker.py::reap_stale_jobs`, runs once per `run_forever` tick):
   a `"running"` job whose `updated_at` hasn't advanced in
   `settings.sync_stale_job_threshold_minutes` (default 15) is requeued/failed the same
@@ -236,8 +294,8 @@ sourced (paginated, bounded, resumable instead of a flat top-20 fetch).
   `logger.exception(...)` at the point of failure. **Deliberately only two categories**
   (YAGNI) — e.g. a revoked/expired Gmail grant currently gets the same "usually
   temporary, try again" message as a transient blip, which is mildly misleading since
-  the actual fix is reconnecting Gmail; not fixed, no evidence yet it's confusing in
-  practice.
+  the actual fix is reconnecting Gmail. **Superseded in Phase 10**: reauth failures
+  now have their own `error_code` and message (see "Reauthorization is terminal").
 - **Evaluation is free and always-on.** `evaluation/dataset.jsonl` +
   `evaluation/run_eval.py` cost nothing per run, and `tests/test_evaluation_accuracy.py`
   gates classification/status/company/position accuracy as part of the normal `pytest`
@@ -245,18 +303,12 @@ sourced (paginated, bounded, resumable instead of a flat top-20 fetch).
 
 ## Known gaps (not fixed, flagged for a future phase)
 
-- **No startup sweep for orphaned "running" jobs.** After a worker deploy/restart, any
-  job that was `"running"` at the moment of restart is orphaned by definition (nothing
-  is working it), but nothing notices until `reap_stale_jobs` naturally catches it after
-  `sync_stale_job_threshold_minutes`. A one-shot unconditional sweep before
-  `run_forever`'s loop starts would cut this to zero — deferred because it's a new
-  behavior beyond what the Phase 5 design covered, not because it's hard.
-- **`_safe_error_message` has only two categories** (see above) — a revoked Gmail grant
-  and a transient API blip render the same "try again shortly" message, which gives
-  wrong advice for the former (needs reconnect, not a retry).
-- **The reaper runs every worker poll tick (every 2s)** rather than being throttled to
-  e.g. once a minute. Explicitly flagged as harmless at this project's scale, not
-  fixed.
+- **Startup sweep — fixed for production lanes in Phase 10** (`sweep_orphans` at each
+  lane drain's start). Local `run_forever` still relies on the 15-minute reaper.
+- **`_safe_error_message`'s two categories — fixed in Phase 10** for the case that
+  mattered (reauth has its own code and message).
+- **The reaper runs every `run_forever` poll tick (every 2s)** — local dev only; in
+  production drains it runs once per claimed job. Harmless, not fixed.
 - **Multi-worker is unverified.** `claim_next_job` and `reap_stale_jobs` both use
   `FOR UPDATE SKIP LOCKED` and are believed safe with more than one worker process, but
   only one worker process has ever actually been run against this code. If a second
@@ -656,6 +708,9 @@ Each was found against real Render/Neon/Google, not locally or in CI:
 1. **Render's Pre-Deploy Command is paid-only** (`4cdeed6`) → migrations run as the
    tail of the Build Command (`uv sync && uv run alembic upgrade head`). A failed
    migration still aborts the deploy; it just looks like any other build failure.
+   **Correction found in Phase 10 (2026-09-25):** the live Build Command was actually
+   just `uv sync` — deploys never migrated; `0006` had been applied by hand. Fixed on
+   Render during Phase 10's CP2a; see "Phase 10 results".
 2. **OAuth login silently failed behind the rewrite** (`50dba5b`) — Render's rewrite
    forwards the backend's own Host header, so `request.url_for` built a callback on the
    backend's domain and the session cookie landed on the wrong origin. `redirect_uri`
@@ -750,19 +805,12 @@ rotation table.
 
 ### Known gaps added by Phase 8 (not fixed)
 
-- **`process_job` has no time budget of its own** (still true after Phase 9, which
-  deferred the fix — see "Phase 9 results"). A lane's drain budget is checked only
-  between jobs. A job that outlives the 120-minute workflow timeout (or
-  a runner that dies) is left `running`; the *next* scheduled run's reaper requeues
-  it with `attempts += 1`, and three such losses fail it permanently. `page_token` is
-  checkpointed per page, so no work is lost. Proper fix: have `process_job` stop
-  between pages at a deadline and requeue without consuming an attempt.
-- **No monitoring of the scheduled worker** beyond the Actions run history (GitHub
-  emails the repo owner on a failed run). `/health/worker` can't see it.
+- **`process_job` time budget — fixed in Phase 10** (time slicing, see above).
+- **Monitoring — fixed in Phase 10** (`sync-monitor.yml`, see "Phase 10 results").
 - **Branch protection doesn't apply to admins** (`enforce_admins: false`) — `f3d46e5`
   was pushed straight to `main`. Harmless for a single maintainer; turn it on if that
   matters.
-- **No rate limiting** on any endpoint, including `POST /gmail/sync` (spec §11).
+- **Rate limiting — added in Phase 10** (see "Phase 10 results" for its limits and gap).
 
 ## Phase 9 results — on-demand sync with lanes (2026-09-24)
 
@@ -846,19 +894,87 @@ non-invalid probe accidentally created a test issue, #6, which was deleted right
 
 ### Known gaps / future work after Phase 9
 
-- **Time-sliced initial imports (deferred by decision).** One initial job still runs to
-  completion inside one run, bounded by the lane's 120-minute timeout (roughly 10,000
-  messages at the measured rate). The deferred design is in the Phase 9 spec §10:
-  stop between pages at a deadline, re-queue without using an attempt, and have the run
-  dispatch its own lane again.
+- **Time-sliced initial imports — built in Phase 10.**
 - **The Retry hint can show for a legitimately waiting initial import.** If one user's
   initial import queues behind another user's in the same lane, "The sync worker
   hasn't started yet" appears after 2 min. Retry is harmless there (the pending run is
   simply re-requested).
 - **The cron fallback is still GitHub-throttled** and is disabled after 60 quiet days
   in a public repo. It only matters when dispatch fails.
-- **No rate limiting** (unchanged): re-kicks are bounded only by one active job per
-  user, and repeated dispatches collapse to one pending run per lane.
+- **Rate limiting — added in Phase 10**, including a 30s per-job re-kick cooldown.
+
+## Phase 10 results — production hardening & observability (2026-09-25)
+
+Spec/plan: `docs/superpowers/specs/2026-09-25-job-tracker-phase-10-production-hardening-design.md`
+and `docs/superpowers/plans/2026-09-25-job-tracker-phase-10-production-hardening.md`.
+Operational procedures (slices, alert runbook, headers, migration-first rule) are in
+README's "Production deployment". No new services; still $0/month. Classifier,
+matching, trust model, review queue and CRUD untouched; `evaluation.compare`
+unchanged (auto_apply_rate 0.419).
+
+**Checkpoints** (each pushed separately, CI green, verified in production):
+- **CP0** — Google consent screen investigated read-only (spec §11). Decision: **stay
+  in Testing** (weekly reconnects). Publishing needs a home page, privacy policy and
+  terms on the app's own domain first — recorded as a future improvement; the planned
+  CP7 sign-in allowlist was dropped (Google's test-user list already gates sign-in).
+- **CP1** (`65c2717`) — error classification (`status_code`, `GmailAuthError`), network
+  errors wrapped, per-message single retry, `hide_parameters=True` (a test reproduced a
+  raw message ID in a logged SQL error first).
+- **CP2a** (`675b4cf`) — migration 0007 **alone** (3 nullable columns + `alerted_at`
+  backfill). **Production check caught that Render wasn't migrating at all** (Build
+  Command was `uv sync`); fixed to `uv sync && uv run alembic upgrade head`, redeployed,
+  then verified `alembic_version=0007`, columns present, 2 historical failures
+  pre-marked alerted. Exactly the failure the migration-first rule exists for.
+- **CP2b** (`c3bf6b3`) — reauth handling + Reconnect UX.
+- **CP3** (`4737be2`, `449bf53`) — slicing, orphan sweep, self re-dispatch, slice
+  override via repo variable.
+- **CP4** (`82228e9`) — monitor + README "Sync alerts" runbook.
+- **CP5** (`015dc9f` + Render dashboard) — rate limits, re-kick cooldown, docs off,
+  SHA pins, headers.
+- **CP6** — failure-injection matrix (`tests/test_sync_failure_injection.py`) + docs.
+
+**Production evidence (times UTC, 2026-09-25):**
+- **Reauth drill:** app access removed at Google → Sync failed in 15s, `attempts=0`,
+  `error_code=gmail_reauth_required`, watermark kept (run `36119962445`); Sync while
+  revoked → 403, no job, no run; Reconnect → `incremental` job from the old watermark,
+  16s (run `36120382424`).
+- **Slicing drill** (repo variable `SYNC_INITIAL_SLICE_SECONDS=20`, deleted after):
+  run `36122230522` paused the initial job and re-dispatched; `36122279114` resumed and
+  completed it — `attempts=0`, 6,559 messages seen, 0 duplicate messages, watermark from
+  the first claim.
+- **Orphan recovery (S4) — not verified in production, by decision.** A cancel can't
+  land mid-job on this mailbox (a full re-import is ~6s of drain time); covered by
+  real-DB tests incl. the "killed seconds before the next run" case.
+- **Monitor:** first run `36123971675` failed with M3 for the reauth drill's job;
+  `36124024844` green (alerts once). Broken-dispatch drill (incremental workflow
+  disabled by the maintainer): queued job → run `36127458129` failed with
+  `M1 due-but-unclaimed jobs: 1`, **email received**; re-enabled + Retry → completed.
+- **Rate limit:** 11 rapid `POST /gmail/sync` → 202, 409×9, 429 (`Retry-After: 41`);
+  only 2 worker runs dispatched (cooldown).
+- **Headers:** all four live on the static site incl. static files; CSP ran report-only
+  through a full UI walk (sign-in, Sync, review, CRUD) with zero reports, then enforcing
+  with a clean re-walk. `/docs`, `/redoc`, `/openapi.json` → 404.
+- **Incremental sync still ~1 min or less:** medians 15.6s after CP3, 12.6s after CP5.
+- **Public logs:** no raw message IDs or Gmail message URLs in Phase 10 run logs.
+
+**Known gaps after Phase 10:**
+- **Per-address sign-in limit doesn't work through the frontend rewrite** (verified:
+  21×302 via the frontend, 429 on the backend URL) — the backend doesn't see a stable
+  client address behind Render's rewrite. Per-user limits are unaffected. Deliberately
+  left best-effort.
+- **A failed `ProcessedMessage` write skips that message for good** (Phase 4 behavior,
+  now pinned by the failure-injection matrix): counted in `failed_count`, not retried.
+- **`messages_seen` over-counts after a crash mid-page** (the page is listed again).
+  Cosmetic; yields happen at page boundaries, so slicing doesn't cause it.
+- **The success-tail commit is outside `process_job`'s handler** (Phase 5 design): a
+  failure there raises; the sweep/reaper recovers the job (cheap — all pages done).
+- **7-day monitor observation (M-c) started 2026-09-25** — record false positives and
+  Neon compute-hours change around 2026-10-02.
+- **The production Neon password was pasted into a Phase 10 session** for read-only
+  checks — rotate it (README rotation table: Render `DATABASE_URL` + GitHub
+  `PROD_DATABASE_URL`).
+- **Weekly Gmail reconnect** remains while the consent screen is in Testing (by
+  decision; see spec §11.5 for what publishing requires).
 
 ## Local dev environment (this machine)
 
@@ -917,3 +1033,11 @@ Three non-obvious test techniques introduced in Phase 5, in `backend/tests/test_
   needed because `conftest.py` explicitly pre-imports every model module for the whole
   suite, which would silently mask the exact import-ordering bug this test exists to
   catch (see "Manual testing findings" above).
+
+Phase 10 added `tests/test_sync_failure_injection.py`: a real Postgres error injected at
+each of the nine commit points of a two-page job (by wrapping `db_session.commit`),
+plus handler-commit and success-tail failures (recovered via `sweep_orphans`), a
+Neon-style `OperationalError`, and every token/Gmail failure kind. If you add a commit
+to `process_job`, `test_a_clean_run_makes_the_expected_number_of_commits` fails first —
+update `CLEAN_RUN_COMMITS` and the matrix covers the new point automatically. Rate
+limits are process-global: `conftest.py` resets them (on a frozen clock) per test.

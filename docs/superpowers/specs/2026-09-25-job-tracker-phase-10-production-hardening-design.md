@@ -1,7 +1,7 @@
 # Job Application Tracker — Phase 10 Design: Production Hardening & Observability
 
 **Date:** 2026-09-25
-**Status:** Draft for review. Scope decisions approved 2026-09-25: full scope (items 1–6,
+**Status:** Implemented and verified in production 2026-09-25 (results in CLAUDE.md, "Phase 10 results"; S4 automated-only by decision; M-c 7-day observation pending). Scope decisions approved 2026-09-25: full scope (items 1–6,
 including rate limiting); 25-minute initial slice, configurable; GitHub failed-run email
 as the only alert channel; a Google consent-screen investigation that stops for approval
 before any Google Cloud change; static-site security headers in CP5 with a conservative

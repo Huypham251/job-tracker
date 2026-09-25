@@ -201,6 +201,13 @@ uv run alembic revision --autogenerate -m "describe change"   # generate
 uv run alembic upgrade head                                    # apply
 ```
 
+**Shipping a migration to production:** push the migration **on its own** first
+(no code that uses the new columns), and confirm production reached the new
+revision (`select version_num from alembic_version`) before pushing the code
+that depends on it. The GitHub Actions sync worker runs `main` the moment it's
+pushed, while Render only migrates during its build, so code that queries a
+column the database doesn't have yet would break every sync in between.
+
 ## Production deployment
 
 Everything runs on free tiers ($0/month):
@@ -214,6 +221,8 @@ GitHub Actions: ci.yml (CI checks)                           Neon Postgres  |
                 sync-incremental.yml / sync-initial.yml  <------------------+
                   (on demand, cron fallback) -- python -m app.sync.drain --lane <lane>
                                                    -> Neon Postgres, Gmail API
+                sync-monitor.yml (about hourly) -- python -m app.sync.monitor
+                                                   -> fails, and GitHub emails you, on trouble
 ```
 
 | Piece | Where | Notes |
@@ -222,13 +231,16 @@ GitHub Actions: ci.yml (CI checks)                           Neon Postgres  |
 | API | Render free Web Service, <https://job-tracker-lds1.onrender.com> | Reached through the frontend's rewrite, so the browser only ever sees one origin. |
 | Database | Neon Postgres (free) | Autosuspends when idle. |
 | Sync worker | GitHub Actions: `.github/workflows/sync-incremental.yml` and `sync-initial.yml` | Started on demand by the API when a sync is queued (cron every 15 min as a fallback). Drains its lane's queued jobs, then exits. It does **not** run inside the API. |
-| CI | GitHub Actions, `.github/workflows/ci.yml` | `backend` and `frontend` are required checks on `main`. |
+| Sync monitor | GitHub Actions: `.github/workflows/sync-monitor.yml` | Checks for stuck, failed or expiring sync state; a failed run is the alert. See "Sync alerts". |
+| CI | GitHub Actions, `.github/workflows/ci.yml` | `backend` and `frontend` are required checks on `main`. Every action is pinned to a commit SHA. |
 
 **Deploy flow:** changes land on `main`, and Render auto-deploys both services from
 it. CI runs on every push and PR. Changes are currently pushed straight to `main`,
 which skips the PR merge gate, so Render can deploy a commit before CI has finished.
-Run the checks under "Tests" locally before pushing. Database migrations run as part of the backend's Build Command,
-so a failed migration fails the deploy and the previous version keeps serving. Keep
+Run the checks under "Tests" locally before pushing. Database migrations run as part of the backend's Build Command
+(`uv sync && uv run alembic upgrade head`: check it's really set, since until
+2026-09-25 it was only `uv sync` and deploys silently skipped migrations), so a
+failed migration fails the deploy and the previous version keeps serving. Keep
 migrations backward-compatible with the previous release (add columns, don't drop
 and recreate in one step), because rolling back the code doesn't roll back the
 schema.
@@ -255,6 +267,15 @@ schema.
    - Publish Directory: `dist`
    - Redirects/Rewrites: add a **Rewrite** from `/api/*` to
      `https://<backend>.onrender.com/api/*`
+   - Headers (its own page in the sidebar), all for path `/*`:
+     `X-Frame-Options: DENY`,
+     `Referrer-Policy: strict-origin-when-cross-origin`,
+     `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()`,
+     and `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`.
+     To change the CSP safely, rename it `Content-Security-Policy-Report-Only`
+     first, check the browser console across sign-in, Sync and the review queue
+     for violations, then rename it back. The headers don't apply to `/api/*`
+     responses (those come from the rewrite).
 4. **Google Cloud Console:** add these redirect URIs, using the **frontend** domain:
    `https://<frontend>.onrender.com/api/v1/auth/google/callback` and
    `https://<frontend>.onrender.com/api/v1/gmail/callback`. Also add the frontend
@@ -385,14 +406,20 @@ the Actions tab.
 - GitHub turns off scheduled workflows (the fallback) in a public repo after 60 days
   without a commit. Starting the worker on demand keeps working; re-enable the
   schedules from the Actions tab.
-- A single first import still has to finish within its lane's 120-minute limit
-  (roughly 10,000+ messages at the measured rate). Splitting it into resumable time
-  slices is a planned improvement.
+- The Sync Monitor is a scheduled workflow too: GitHub throttles it and disables it
+  after 60 quiet days, the same as the fallback schedules.
 - Google expires Gmail authorizations for apps in "Testing" mode after about 7 days,
-  so expect to reconnect Gmail roughly weekly.
+  so expect to reconnect Gmail roughly weekly. The app then shows **Reconnect
+  Gmail**; reconnecting keeps your sync history, and the monitor emails you
+  (alert M3). Publishing the Google app would remove the weekly expiry, but needs a
+  home page, a privacy policy and terms on the app's own domain first (see the
+  Phase 10 spec, §11).
 - Render's free instance has 512 MB of memory and no metrics, which is why sync
   work doesn't run inside the API.
-- There's no rate limiting on any endpoint yet.
+- Rate limits are in memory in the single API process (Sync 10/min, Gmail
+  messages and connect 5/min per user), so a restart resets them. The per-address
+  limit on Google sign-in (20/min) only works on the backend's own URL: through the
+  frontend's rewrite the backend doesn't see a stable client address.
 
 ## Tests
 
