@@ -37,7 +37,8 @@ jobs:
       FRONTEND_URL: https://job-tracker-1-ldy2.onrender.com
       ENV: production
       COOKIE_SECURE: "true"
-      SYNC_INITIAL_SLICE_SECONDS: "1500"
+      # Override without a commit via the repo variable of the same name (drills).
+      SYNC_INITIAL_SLICE_SECONDS: ${{ vars.SYNC_INITIAL_SLICE_SECONDS || '1500' }}
     steps:
       - uses: actions/checkout@v4
 

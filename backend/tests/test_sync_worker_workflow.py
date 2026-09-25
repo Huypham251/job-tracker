@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -61,7 +62,12 @@ def test_lane_timeout_leaves_margin_above_its_configured_slice(lane) -> None:
     job timeout only has to cover one slice plus one page and setup — and
     must stay below GitHub's 360-minute default, or it protects nothing."""
     job = _load(lane)["jobs"]["drain"]
-    slice_seconds = int(job["env"][SLICE_ENV[lane]])
+    # A repo variable of the same name may override the slice (production
+    # drills) without a commit; the default the file falls back to is what
+    # this margin is checked against.
+    match = re.fullmatch(r"\$\{\{ vars\.(\w+) \|\| '(\d+)' \}\}", job["env"][SLICE_ENV[lane]])
+    assert match is not None and match.group(1) == SLICE_ENV[lane]
+    slice_seconds = int(match.group(2))
     assert slice_seconds == EXPECTED_SLICE_SECONDS[lane]
     assert job["timeout-minutes"] == EXPECTED_TIMEOUT_MINUTES[lane]
     assert slice_seconds + SLICE_MARGIN_SECONDS <= job["timeout-minutes"] * 60 < GITHUB_DEFAULT_TIMEOUT_MINUTES * 60
