@@ -4,6 +4,9 @@ import { getLatestSyncJob, getSyncJob, startSync } from '../api/sync'
 import type { SyncJob } from '../types/sync'
 
 const POLL_INTERVAL_MS = 2000
+// A dispatched worker normally starts within ~15-30s; past this, offer a Retry
+// (which re-requests the worker) instead of an open-ended "Starting…".
+const QUEUED_HINT_AFTER_MS = 2 * 60 * 1000
 
 interface Props {
   onSyncCompleted: () => void
@@ -12,7 +15,19 @@ interface Props {
 export function SyncPanel({ onSyncCompleted }: Props) {
   const [job, setJob] = useState<SyncJob | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [queuedSeenAt, setQueuedSeenAt] = useState<number | null>(null)
+  const [now, setNow] = useState(() => Date.now())
   const pollRef = useRef<number | null>(null)
+
+  // Every job update goes through here so "how long has it sat in the
+  // queue" is tracked from the first moment this page saw it queued.
+  const applyJob = (next: SyncJob | null) => {
+    setJob(next)
+    setNow(Date.now())
+    setQueuedSeenAt((seenAt) =>
+      next?.status === 'queued' ? (seenAt ?? Date.now()) : null,
+    )
+  }
 
   const stopPolling = () => {
     if (pollRef.current !== null) {
@@ -26,7 +41,7 @@ export function SyncPanel({ onSyncCompleted }: Props) {
     pollRef.current = window.setInterval(() => {
       getSyncJob(id)
         .then((updated) => {
-          setJob(updated)
+          applyJob(updated)
           if (updated.status === 'completed' || updated.status === 'failed') {
             stopPolling()
             onSyncCompleted()
@@ -42,7 +57,7 @@ export function SyncPanel({ onSyncCompleted }: Props) {
   useEffect(() => {
     getLatestSyncJob()
       .then((latest) => {
-        setJob(latest)
+        applyJob(latest)
         if (latest && (latest.status === 'queued' || latest.status === 'running')) {
           pollJob(latest.id)
         }
@@ -57,14 +72,30 @@ export function SyncPanel({ onSyncCompleted }: Props) {
     setError(null)
     try {
       const started = await startSync()
-      setJob(started)
+      applyJob(started)
       pollJob(started.id)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start sync')
     }
   }
 
+  // POST /sync on an already-queued job returns it (409) and asks the backend
+  // to request the worker again — same job, fresh start attempt.
+  const handleRetry = async () => {
+    setError(null)
+    try {
+      const current = await startSync()
+      setQueuedSeenAt(null)
+      applyJob(current)
+      pollJob(current.id)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to restart sync')
+    }
+  }
+
   const isActive = job?.status === 'queued' || job?.status === 'running'
+  const waitingTooLong =
+    job?.status === 'queued' && queuedSeenAt !== null && now - queuedSeenAt > QUEUED_HINT_AFTER_MS
 
   return (
     <section className="space-y-2 rounded border border-gray-200 bg-white p-4">
@@ -79,10 +110,29 @@ export function SyncPanel({ onSyncCompleted }: Props) {
         </button>
       </div>
       {error && <p className="text-sm text-red-700">{error}</p>}
-      {job && isActive && (
+      {job && job.status === 'queued' && (
         <p className="text-sm text-gray-600">
-          {job.job_type === 'initial' ? 'Initial sync' : 'Incremental sync'} running —{' '}
-          {job.messages_processed} of {job.messages_seen || '?'} messages processed.
+          Starting {job.job_type === 'initial' ? 'your first Gmail import' : 'sync'}…
+        </p>
+      )}
+      {job && job.status === 'running' && (
+        <p className="text-sm text-gray-600">
+          {job.job_type === 'initial' ? 'Importing' : 'Syncing'} — {job.messages_processed} of{' '}
+          {job.messages_seen || '?'} messages processed.
+        </p>
+      )}
+      {job && isActive && job.job_type === 'initial' && (
+        <p className="text-xs text-gray-500">
+          The first import runs in the background and can take up to an hour for a large
+          mailbox. You can close this page.
+        </p>
+      )}
+      {waitingTooLong && (
+        <p className="text-sm text-amber-700">
+          The sync worker hasn&apos;t started yet.{' '}
+          <button onClick={handleRetry} className="font-medium underline">
+            Retry
+          </button>
         </p>
       )}
       {job && job.status === 'completed' && (

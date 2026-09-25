@@ -19,6 +19,7 @@ export function ApplicationsPage({ user, onLogout }: Props) {
   const { applications, loading, error, refetch, create, update, remove } = useApplications()
   const [editing, setEditing] = useState<Application | null>(null)
   const [reviewRefreshSignal, setReviewRefreshSignal] = useState(0)
+  const [gmailConnected, setGmailConnected] = useState(false)
 
   const handleSyncCompleted = () => {
     void refetch()
@@ -37,9 +38,9 @@ export function ApplicationsPage({ user, onLogout }: Props) {
         <UserMenu user={user} onLogout={onLogout} />
       </header>
 
-      <GmailPanel />
+      <GmailPanel onConnectionChange={setGmailConnected} />
 
-      <SyncPanel onSyncCompleted={handleSyncCompleted} />
+      {gmailConnected && <SyncPanel onSyncCompleted={handleSyncCompleted} />}
 
       <ReviewQueue
         applications={applications}

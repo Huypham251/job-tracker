@@ -8,7 +8,13 @@ import {
 } from '../api/gmail'
 import type { GmailMessageSummary, GmailStatus } from '../types/gmail'
 
-export function GmailPanel() {
+interface Props {
+  // Lets the dashboard hide Gmail-only UI (the Sync panel) for users who
+  // track applications manually without connecting Gmail.
+  onConnectionChange?: (connected: boolean) => void
+}
+
+export function GmailPanel({ onConnectionChange }: Props) {
   const [status, setStatus] = useState<GmailStatus | null>(null)
   const [messages, setMessages] = useState<GmailMessageSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -16,16 +22,22 @@ export function GmailPanel() {
 
   useEffect(() => {
     getGmailStatus()
-      .then(setStatus)
+      .then((loaded) => {
+        setStatus(loaded)
+        onConnectionChange?.(loaded.connected)
+      })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load Gmail status'))
       .finally(() => setLoading(false))
-  }, [])
+    // onConnectionChange must be stable (the dashboard passes a useState
+    // setter), or this would refetch the status on every render.
+  }, [onConnectionChange])
 
   const handleDisconnect = async () => {
     setError(null)
     try {
       await disconnectGmail()
       setStatus({ connected: false, email: null, connected_at: null })
+      onConnectionChange?.(false)
       setMessages(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to disconnect Gmail')
