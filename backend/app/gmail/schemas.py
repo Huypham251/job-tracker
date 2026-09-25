@@ -7,6 +7,7 @@ class GmailStatus(BaseModel):
     connected: bool
     email: str | None
     connected_at: datetime | None
+    needs_reconnect: bool = False
 
 
 class GmailMessageSummary(BaseModel):

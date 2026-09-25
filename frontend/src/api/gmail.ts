@@ -18,3 +18,7 @@ export function fetchGmailMessages(limit = 20): Promise<GmailMessageSummary[]> {
 }
 
 export const GMAIL_CONNECT_URL = `${BASE}/connect`
+
+// The backend's code for an expired/revoked Gmail grant. Reconnecting goes
+// through the normal connect flow, which keeps the existing sync history.
+export const GMAIL_REAUTH_CODE = 'gmail_reauth_required'

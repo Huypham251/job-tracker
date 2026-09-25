@@ -182,3 +182,31 @@ def test_start_sync_rekicks_a_stale_running_job(
 
     assert second.status_code == 409
     assert dispatched == ["initial", "initial"]
+
+
+def test_start_sync_returns_403_with_a_reconnect_code_and_does_not_dispatch(
+    auth_client: TestClient, db_session, connected_gmail, monkeypatch
+) -> None:
+    connected_gmail.reauth_required_at = datetime.now(timezone.utc)
+    db_session.commit()
+    dispatched = []
+    monkeypatch.setattr(dispatch, "request_worker", lambda job_type: dispatched.append(job_type))
+
+    response = auth_client.post(f"{BASE}/sync")
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "gmail_reauth_required"
+    assert dispatched == []
+
+
+def test_get_sync_exposes_the_error_code(auth_client: TestClient, db_session, connected_gmail, user) -> None:
+    job = SyncJob(
+        user_id=user.id, job_type="incremental", window_start=datetime.now(timezone.utc).date(),
+        status="failed", error_code="gmail_reauth_required", error_message="Reconnect Gmail",
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    body = auth_client.get(f"{BASE}/sync/{job.id}").json()
+
+    assert body["error_code"] == "gmail_reauth_required"

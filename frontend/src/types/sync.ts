@@ -11,6 +11,7 @@ export interface SyncJob {
   ignored: number
   failed_count: number
   error_message: string | null
+  error_code?: string | null
   started_at: string | null
   finished_at: string | null
   created_at: string

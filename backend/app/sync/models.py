@@ -43,5 +43,11 @@ class SyncJob(TimestampMixin, Base):
     ignored: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Phase 10: machine-readable failure kind for the frontend (e.g.
+    # "gmail_reauth_required"); None for the generic failures.
+    error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Phase 10: when the monitor (app/sync/monitor.py) reported this failed
+    # job, so it alerts once per failure.
+    alerted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

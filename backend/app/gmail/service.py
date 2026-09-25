@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.gmail import google_api
 from app.gmail.crypto import decrypt_token, encrypt_token
-from app.gmail.exceptions import GmailNotConnected
+from app.gmail.exceptions import GmailNotConnected, GmailReauthRequired
 from app.gmail.models import GmailConnection
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,20 @@ def _revoke_stored_refresh_token(connection: GmailConnection, user_id: UUID, act
     except google_api.GoogleApiError:
         # A failed revoke leaves a stale grant at Google — logged, not fatal.
         logger.warning("Failed to revoke Gmail token for user %s on %s", user_id, action)
+
+
+def _decrypt_or_reauth(ciphertext: str) -> str:
+    try:
+        return decrypt_token(ciphertext)
+    except InvalidToken as exc:
+        # GMAIL_TOKEN_ENCRYPTION_KEY was rotated since this row was written:
+        # the grant is unreadable, and only a reconnect can replace it.
+        raise google_api.GmailAuthError("stored Gmail token is unreadable") from exc
+
+
+def mark_reauth_required(db: Session, connection: GmailConnection) -> None:
+    connection.reauth_required_at = datetime.now(timezone.utc)
+    db.commit()
 
 
 def get_connection(db: Session, user_id: UUID) -> GmailConnection | None:
@@ -73,6 +87,7 @@ def connect(db: Session, user_id: UUID, token: dict) -> GmailConnection:
     connection.refresh_token_encrypted = encrypt_token(refresh_token)
     connection.token_expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
     connection.scope = scope
+    connection.reauth_required_at = None
 
     db.commit()
     db.refresh(connection)
@@ -81,9 +96,9 @@ def connect(db: Session, user_id: UUID, token: dict) -> GmailConnection:
 
 def get_valid_access_token(db: Session, connection: GmailConnection) -> str:
     if connection.token_expiry - datetime.now(timezone.utc) > REFRESH_BUFFER:
-        return decrypt_token(connection.access_token_encrypted)
+        return _decrypt_or_reauth(connection.access_token_encrypted)
 
-    refresh_token = decrypt_token(connection.refresh_token_encrypted)
+    refresh_token = _decrypt_or_reauth(connection.refresh_token_encrypted)
     token = google_api.refresh_access_token(
         client_id=settings.google_client_id,
         client_secret=settings.google_client_secret,
@@ -103,9 +118,13 @@ def list_recent_messages(db: Session, user_id: UUID, limit: int) -> list[dict]:
     if connection is None:
         raise GmailNotConnected(user_id)
 
-    access_token = get_valid_access_token(db, connection)
-    message_ids = google_api.list_message_ids(access_token, limit=limit)
-    return [google_api.get_message_summary(access_token, message_id) for message_id in message_ids]
+    try:
+        access_token = get_valid_access_token(db, connection)
+        message_ids = google_api.list_message_ids(access_token, limit=limit)
+        return [google_api.get_message_summary(access_token, message_id) for message_id in message_ids]
+    except google_api.GmailAuthError:
+        mark_reauth_required(db, connection)
+        raise GmailReauthRequired(user_id) from None
 
 
 def disconnect(db: Session, user_id: UUID) -> None:

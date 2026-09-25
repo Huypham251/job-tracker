@@ -4,10 +4,11 @@ import pytest
 
 from app.core.config import settings
 from app.gmail.crypto import encrypt_token
-from app.gmail.exceptions import GmailNotConnected
+from app.gmail.exceptions import GmailNotConnected, GmailReauthRequired
 from app.gmail.models import GmailConnection
 from app.sync import service
 from app.sync.exceptions import SyncAlreadyRunning
+from app.sync.models import SyncJob
 
 
 def _connect_gmail(db_session, user, *, last_synced_message_date=None) -> GmailConnection:
@@ -102,3 +103,24 @@ def test_get_latest_job_returns_the_most_recently_created_job(db_session, user) 
 
     assert latest is not None
     assert latest.id == second.id
+
+
+def test_enqueue_sync_refuses_a_connection_that_needs_reconnect(db_session, user) -> None:
+    connection = _connect_gmail(db_session, user)
+    connection.reauth_required_at = datetime.now(timezone.utc)
+    db_session.commit()
+
+    with pytest.raises(GmailReauthRequired):
+        service.enqueue_sync(db_session, user.id)
+
+    assert db_session.query(SyncJob).count() == 0
+
+
+def test_enqueue_after_reconnect_is_incremental(db_session, user) -> None:
+    # connect() clears reauth_required_at but keeps the watermark.
+    _connect_gmail(db_session, user, last_synced_message_date=date(2026, 9, 1))
+
+    job = service.enqueue_sync(db_session, user.id)
+
+    assert job.job_type == "incremental"
+    assert job.window_start == date(2026, 8, 31)

@@ -53,7 +53,9 @@ def test_gmail_endpoints_require_authentication(client: TestClient, method, path
 def test_status_when_not_connected(auth_client: TestClient) -> None:
     response = auth_client.get(f"{BASE}/status")
     assert response.status_code == 200
-    assert response.json() == {"connected": False, "email": None, "connected_at": None}
+    assert response.json() == {
+        "connected": False, "email": None, "connected_at": None, "needs_reconnect": False
+    }
 
 
 def test_status_when_connected(auth_client: TestClient, connected_gmail) -> None:
@@ -62,6 +64,7 @@ def test_status_when_connected(auth_client: TestClient, connected_gmail) -> None
     body = response.json()
     assert body["connected"] is True
     assert body["email"] == "alice@gmail.com"
+    assert body["needs_reconnect"] is False
 
 
 def test_callback_success_creates_connection(auth_client: TestClient, monkeypatch) -> None:
@@ -202,3 +205,30 @@ def test_cross_user_isolation(
 
     own_status = auth_client.get(f"{BASE}/status")
     assert own_status.json()["connected"] is True
+
+
+def test_status_reports_needs_reconnect(auth_client: TestClient, db_session, connected_gmail) -> None:
+    connected_gmail.reauth_required_at = datetime.now(timezone.utc)
+    db_session.commit()
+
+    body = auth_client.get(f"{BASE}/status").json()
+
+    assert body["connected"] is True
+    assert body["needs_reconnect"] is True
+
+
+def test_messages_endpoint_403_with_a_reconnect_code_when_the_grant_is_gone(
+    auth_client: TestClient, db_session, connected_gmail, monkeypatch
+) -> None:
+    def revoked(token, limit):
+        raise google_api.GmailAuthError("message list failed: 401", status_code=401)
+
+    monkeypatch.setattr(google_api, "list_message_ids", revoked)
+
+    response = auth_client.get(f"{BASE}/messages")
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "gmail_reauth_required"
+    assert "Reconnect Gmail" in response.json()["detail"]
+    db_session.refresh(connected_gmail)
+    assert connected_gmail.reauth_required_at is not None

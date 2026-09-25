@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.gmail import service as gmail_service
-from app.gmail.exceptions import GmailNotConnected
+from app.gmail.exceptions import GmailNotConnected, GmailReauthRequired
 from app.sync.exceptions import SyncAlreadyRunning
 from app.sync.models import SyncJob
 
@@ -25,6 +25,10 @@ def enqueue_sync(db: Session, user_id: UUID) -> SyncJob:
     connection = gmail_service.get_connection(db, user_id)
     if connection is None:
         raise GmailNotConnected(user_id)
+    if connection.reauth_required_at is not None:
+        # The grant is gone (Phase 10): a job would only fail — and dispatch
+        # a worker run — so ask for a reconnect instead.
+        raise GmailReauthRequired(user_id)
 
     active = _get_active_job(db, user_id)
     if active is not None:

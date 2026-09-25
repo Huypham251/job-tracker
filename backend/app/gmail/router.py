@@ -45,7 +45,10 @@ def gmail_status(
     if connection is None:
         return GmailStatus(connected=False, email=None, connected_at=None)
     return GmailStatus(
-        connected=True, email=connection.google_email, connected_at=connection.created_at
+        connected=True,
+        email=connection.google_email,
+        connected_at=connection.created_at,
+        needs_reconnect=connection.reauth_required_at is not None,
     )
 
 

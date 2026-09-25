@@ -5,7 +5,9 @@ import {
   fetchGmailMessages,
   getGmailStatus,
   GMAIL_CONNECT_URL,
+  GMAIL_REAUTH_CODE,
 } from '../api/gmail'
+import { ApiError } from '../api/http'
 import type { GmailMessageSummary, GmailStatus } from '../types/gmail'
 
 interface Props {
@@ -49,6 +51,9 @@ export function GmailPanel({ onConnectionChange }: Props) {
     try {
       setMessages(await fetchGmailMessages())
     } catch (err) {
+      if (err instanceof ApiError && err.code === GMAIL_REAUTH_CODE) {
+        setStatus((current) => (current ? { ...current, needs_reconnect: true } : current))
+      }
       setError(err instanceof Error ? err.message : 'Failed to fetch Gmail messages')
     }
   }
@@ -88,6 +93,21 @@ export function GmailPanel({ onConnectionChange }: Props) {
           </a>
         )}
       </div>
+
+      {status?.connected && status.needs_reconnect && (
+        <div className="flex items-center justify-between gap-4 rounded border border-amber-200 bg-amber-50 p-3">
+          <p className="text-sm text-amber-800">
+            Gmail access expired or was revoked. Reconnect to keep syncing — your sync history is
+            kept.
+          </p>
+          <a
+            href={GMAIL_CONNECT_URL}
+            className="shrink-0 rounded bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700"
+          >
+            Reconnect Gmail
+          </a>
+        </div>
+      )}
 
       {error && (
         <p className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>

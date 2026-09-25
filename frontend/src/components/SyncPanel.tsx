@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { GMAIL_CONNECT_URL, GMAIL_REAUTH_CODE } from '../api/gmail'
+import { ApiError } from '../api/http'
 import { getLatestSyncJob, getSyncJob, startSync } from '../api/sync'
 import type { SyncJob } from '../types/sync'
 
@@ -15,6 +17,8 @@ interface Props {
 export function SyncPanel({ onSyncCompleted }: Props) {
   const [job, setJob] = useState<SyncJob | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Set when POST /sync is refused because the Gmail grant is gone (403).
+  const [reauthRefused, setReauthRefused] = useState(false)
   const [queuedSeenAt, setQueuedSeenAt] = useState<number | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const pollRef = useRef<number | null>(null)
@@ -70,11 +74,13 @@ export function SyncPanel({ onSyncCompleted }: Props) {
 
   const handleSync = async () => {
     setError(null)
+    setReauthRefused(false)
     try {
       const started = await startSync()
       applyJob(started)
       pollJob(started.id)
     } catch (err) {
+      setReauthRefused(err instanceof ApiError && err.code === GMAIL_REAUTH_CODE)
       setError(err instanceof Error ? err.message : 'Failed to start sync')
     }
   }
@@ -94,6 +100,8 @@ export function SyncPanel({ onSyncCompleted }: Props) {
   }
 
   const isActive = job?.status === 'queued' || job?.status === 'running'
+  const needsReconnect =
+    reauthRefused || (job?.status === 'failed' && job.error_code === GMAIL_REAUTH_CODE)
   const waitingTooLong =
     job?.status === 'queued' && queuedSeenAt !== null && now - queuedSeenAt > QUEUED_HINT_AFTER_MS
 
@@ -141,8 +149,16 @@ export function SyncPanel({ onSyncCompleted }: Props) {
           {job.ignored} ignored{job.failed_count > 0 ? `, ${job.failed_count} failed` : ''}.
         </p>
       )}
-      {job && job.status === 'failed' && (
+      {job && job.status === 'failed' && !reauthRefused && (
         <p className="text-sm text-red-700">Sync failed: {job.error_message}</p>
+      )}
+      {needsReconnect && (
+        <p className="text-sm">
+          <a href={GMAIL_CONNECT_URL} className="font-medium text-amber-700 underline">
+            Reconnect Gmail
+          </a>{' '}
+          <span className="text-gray-500">— your sync history is kept.</span>
+        </p>
       )}
     </section>
   )

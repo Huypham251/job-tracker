@@ -11,7 +11,8 @@ from app.core.privacy import message_ref
 from app.db.session import SessionLocal
 from app.gmail import google_api
 from app.gmail import service as gmail_service
-from app.gmail.google_api import GoogleApiError
+from app.gmail.exceptions import REAUTH_CODE, REAUTH_MESSAGE
+from app.gmail.google_api import GmailAuthError, GoogleApiError
 from app.pipeline import service as pipeline_service
 from app.pipeline.models import ProcessedMessage
 from app.sync.models import SyncJob
@@ -91,6 +92,8 @@ def _fetch_message(access_token: str, message_id: str) -> tuple[dict, str]:
     if it's older than the next incremental window it's never seen again."""
     try:
         return google_api.get_message(access_token, message_id)
+    except GmailAuthError:
+        raise
     except GoogleApiError as exc:
         if not _is_transient(exc):
             raise
@@ -193,6 +196,10 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
 
                 try:
                     summary, body = _fetch_message(access_token, message_id)
+                except GmailAuthError:
+                    # The grant is gone — every remaining message would fail
+                    # the same way, so abort the job (handled below).
+                    raise
                 except GoogleApiError as exc:
                     logger.warning(
                         "Skipping message %s: fetch failed (%s)", message_ref(message_id), _describe_failure(exc)
@@ -237,6 +244,21 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
 
             if next_page_token is None:
                 break
+    except GmailAuthError:
+        # Revoked, expired or unreadable grant: retrying can't help, so fail
+        # now (attempts untouched) and flag the connection so the UI offers a
+        # reconnect and enqueue_sync refuses doomed jobs. Same rollback-first
+        # rule as the generic handler below.
+        db.rollback()
+        logger.warning("Sync job %s stopped: Gmail authorization is no longer valid", job.id)
+        now = datetime.now(timezone.utc)
+        job.status = "failed"
+        job.error_code = REAUTH_CODE
+        job.error_message = REAUTH_MESSAGE
+        job.finished_at = now
+        connection.reauth_required_at = now
+        db.commit()
+        return
     except Exception as exc:
         # Roll back BEFORE touching `job` — if `exc` came from a failed DB
         # statement, the session needs a rollback before it can run anything

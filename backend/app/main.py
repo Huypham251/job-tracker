@@ -14,7 +14,7 @@ from app.applications.exceptions import ApplicationNotFound
 from app.applications.router import router as applications_router
 from app.auth.router import router as auth_router
 from app.core.config import settings
-from app.gmail.exceptions import GmailNotConnected
+from app.gmail.exceptions import REAUTH_CODE, REAUTH_MESSAGE, GmailNotConnected, GmailReauthRequired
 from app.gmail.google_api import GoogleApiError
 from app.gmail.router import router as gmail_router
 from app.pipeline.exceptions import ReviewItemNotFound
@@ -66,6 +66,12 @@ def create_app() -> FastAPI:
         request: Request, exc: GmailNotConnected
     ) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @app.exception_handler(GmailReauthRequired)
+    async def handle_gmail_reauth_required(request: Request, exc: GmailReauthRequired) -> JSONResponse:
+        # 403, not 409: the frontend reads a 409 body as the active SyncJob,
+        # while any client shows a 403's detail as a plain error message.
+        return JSONResponse(status_code=403, content={"detail": REAUTH_MESSAGE, "code": REAUTH_CODE})
 
     @app.exception_handler(GoogleApiError)
     async def handle_google_api_error(

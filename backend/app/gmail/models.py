@@ -32,5 +32,9 @@ class GmailConnection(TimestampMixin, Base):
     )
     scope: Mapped[str] = mapped_column(String(255), nullable=False)
     last_synced_message_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Phase 10: set when Google refuses the stored grant (revoked, expired —
+    # weekly while the consent screen is in Testing — or unreadable after an
+    # encryption-key rotation); cleared by a successful reconnect.
+    reauth_required_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     owner: Mapped["User"] = relationship(back_populates="gmail_connection")

@@ -1,11 +1,11 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from cryptography.fernet import Fernet
 
 from app.gmail import google_api, service
 from app.gmail.crypto import decrypt_token, encrypt_token
-from app.gmail.exceptions import GmailNotConnected
+from app.gmail.exceptions import GmailNotConnected, GmailReauthRequired
 from app.gmail.models import GmailConnection
 
 FAKE_TOKEN = {
@@ -213,3 +213,54 @@ def test_disconnect_deletes_row_after_encryption_key_rotation(db_session, user, 
 def test_disconnect_raises_when_not_connected(db_session, user) -> None:
     with pytest.raises(GmailNotConnected):
         service.disconnect(db_session, user.id)
+
+
+def test_get_valid_access_token_raises_auth_error_when_the_stored_token_is_unreadable(
+    db_session, user
+) -> None:
+    # GMAIL_TOKEN_ENCRYPTION_KEY rotated: only a reconnect can fix it, so it's
+    # an auth error (no retries), not a generic crash.
+    connection = _make_connection_encrypted_with_a_rotated_away_key(db_session, user)
+    with pytest.raises(google_api.GmailAuthError):
+        service.get_valid_access_token(db_session, connection)
+
+
+def test_get_valid_access_token_raises_auth_error_when_an_expired_tokens_refresh_token_is_unreadable(
+    db_session, user
+) -> None:
+    connection = _make_connection_encrypted_with_a_rotated_away_key(db_session, user)
+    connection.token_expiry = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db_session.commit()
+    with pytest.raises(google_api.GmailAuthError):
+        service.get_valid_access_token(db_session, connection)
+
+
+def test_connect_clears_reauth_and_keeps_the_watermark(db_session, user, monkeypatch) -> None:
+    # Reconnecting (not disconnect + connect) must keep sync history, so the
+    # next sync is incremental rather than a full 180-day import.
+    connection = _make_connection(db_session, user, expires_in_seconds=3600)
+    connection.reauth_required_at = datetime.now(timezone.utc)
+    connection.last_synced_message_date = date(2026, 9, 1)
+    db_session.commit()
+    monkeypatch.setattr(google_api, "get_profile", lambda token: {"emailAddress": "alice@gmail.com"})
+    monkeypatch.setattr(google_api, "revoke_token", lambda token: None)
+
+    service.connect(db_session, user.id, FAKE_TOKEN)
+
+    db_session.refresh(connection)
+    assert connection.reauth_required_at is None
+    assert connection.last_synced_message_date == date(2026, 9, 1)
+
+
+def test_list_recent_messages_flags_reauth_and_raises(db_session, user, monkeypatch) -> None:
+    connection = _make_connection(db_session, user, expires_in_seconds=3600)
+
+    def revoked(token, limit):
+        raise google_api.GmailAuthError("message list failed: 401", status_code=401)
+
+    monkeypatch.setattr(google_api, "list_message_ids", revoked)
+
+    with pytest.raises(GmailReauthRequired):
+        service.list_recent_messages(db_session, user.id, 5)
+    db_session.refresh(connection)
+    assert connection.reauth_required_at is not None

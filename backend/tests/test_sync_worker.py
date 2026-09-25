@@ -1228,3 +1228,80 @@ def test_a_db_error_in_the_precheck_query_does_not_log_raw_message_ids(
 
     assert "division by zero" in caplog.text  # the failure really happened and was logged
     assert "rawid789" not in caplog.text
+
+
+@pytest.mark.parametrize("where", ["refresh", "list", "message"])
+def test_process_job_fails_fast_and_flags_the_connection_on_reauth(
+    db_session, user, monkeypatch, where
+) -> None:
+    connection = _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+
+    def raise_auth(*args, **kwargs):
+        raise google_api.GmailAuthError("revoked", status_code=401)
+
+    if where == "refresh":
+        monkeypatch.setattr(gmail_service, "get_valid_access_token", raise_auth)
+    elif where == "list":
+        monkeypatch.setattr(google_api, "list_message_ids_page", raise_auth)
+    else:
+        monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["m1"], None))
+        monkeypatch.setattr(google_api, "get_message", raise_auth)
+
+    process_job(db_session, job, _FakeExtractor({}))
+
+    db_session.refresh(job)
+    db_session.refresh(connection)
+    assert job.status == "failed"
+    assert job.error_code == "gmail_reauth_required"
+    assert "Reconnect Gmail" in job.error_message
+    assert job.attempts == 0
+    assert job.finished_at is not None
+    assert connection.reauth_required_at is not None
+    assert connection.last_synced_message_date is None  # watermark never advanced
+
+
+def test_process_job_treats_a_401_on_a_message_fetch_as_reauth(db_session, user, monkeypatch) -> None:
+    # Must abort the job, not skip every message on the page one by one.
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+    sleeps = _no_sleep(monkeypatch)
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["m1", "m2", "m3"], None))
+    calls = []
+
+    def revoked(token, mid):
+        calls.append(mid)
+        raise google_api.GmailAuthError("message fetch failed: 401", status_code=401)
+
+    monkeypatch.setattr(google_api, "get_message", revoked)
+
+    process_job(db_session, job, _FakeExtractor({}))
+
+    assert calls == ["m1"]
+    assert sleeps == []
+    db_session.refresh(job)
+    assert job.failed_count == 0
+    assert job.error_code == "gmail_reauth_required"
+
+
+def test_process_job_keeps_retrying_generic_failures_without_an_error_code(
+    db_session, user, monkeypatch
+) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id, attempts=2, max_attempts=3)
+    db_session.add(job)
+    db_session.commit()
+    monkeypatch.setattr(
+        google_api, "list_message_ids_page",
+        lambda token, **kw: (_ for _ in ()).throw(google_api.GoogleApiError("down", status_code=503)),
+    )
+
+    process_job(db_session, job, _FakeExtractor({}))
+
+    db_session.refresh(job)
+    assert job.status == "failed"
+    assert job.error_code is None

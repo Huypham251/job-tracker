@@ -19,6 +19,7 @@ class SyncJobRead(BaseModel):
     ignored: int
     failed_count: int
     error_message: str | None
+    error_code: str | None = None
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
