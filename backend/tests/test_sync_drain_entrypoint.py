@@ -101,3 +101,19 @@ def test_drain_main_writes_nothing_outside_github_actions(monkeypatch, tmp_path)
     drain_module.main(["--lane", "initial"])
 
     assert list(tmp_path.iterdir()) == []
+
+
+def test_monitor_module_can_configure_orm_mappers_standalone() -> None:
+    # Same standalone-import hazard as the drain and worker entrypoints.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import app.sync.monitor; from sqlalchemy.orm import configure_mappers; configure_mappers()",
+        ],
+        cwd=BACKEND_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr

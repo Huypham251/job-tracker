@@ -1,3 +1,5 @@
+from datetime import date
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -66,6 +68,10 @@ class Settings(BaseSettings):
     sync_dispatch_token: str | None = None
     sync_dispatch_repository: str | None = None
     sync_dispatch_ref: str = "main"
+    # Phase 10 — the dispatch token's expiry date (not a secret), so the
+    # monitor (app/sync/monitor.py) warns before it lapses. Set only in the
+    # sync-monitor workflow.
+    sync_dispatch_token_expires_on: date | None = None
 
     @property
     def cors_origins_list(self) -> list[str]:

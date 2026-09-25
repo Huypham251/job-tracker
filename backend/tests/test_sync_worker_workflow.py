@@ -94,3 +94,28 @@ def test_lane_workflow_drains_only_its_own_lane(lane) -> None:
 def test_lane_workflow_token_can_only_read_code_and_start_workflows(lane) -> None:
     # actions: write is needed only for the self re-dispatch step (Phase 10).
     assert _load(lane)["permissions"] == {"contents": "read", "actions": "write"}
+
+
+def _load_monitor() -> dict:
+    return yaml.safe_load((WORKFLOWS_DIR / "sync-monitor.yml").read_text())
+
+
+def test_monitor_workflow_is_scheduled_dispatchable_and_read_only() -> None:
+    workflow = _load_monitor()
+    triggers = _triggers(workflow)
+    assert "workflow_dispatch" in triggers
+    assert triggers["schedule"][0]["cron"]
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["concurrency"] == {"group": "sync-monitor", "cancel-in-progress": False}
+    job = workflow["jobs"]["monitor"]
+    assert job["timeout-minutes"] <= 10
+    assert job["steps"][-1]["run"] == "uv run python -m app.sync.monitor"
+
+
+def test_monitor_workflow_gets_only_the_database_secret() -> None:
+    # The monitor never talks to Google or signs sessions, so it gets no
+    # other production secret — its logs are public.
+    env = _load_monitor()["jobs"]["monitor"]["env"]
+    secrets_used = {value for value in env.values() if "secrets." in str(value)}
+    assert secrets_used == {"${{ secrets.PROD_DATABASE_URL }}"}
+    assert env["SYNC_DISPATCH_TOKEN_EXPIRES_ON"] == "2027-09-24"

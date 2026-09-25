@@ -294,8 +294,17 @@ to start the worker workflow for that job's **lane**:
 
 | Lane | Used for | Workflow | Time limit |
 |---|---|---|---|
-| `incremental` | Every sync after the first | `sync-incremental.yml` | 30 min |
-| `initial` | The first 180-day import | `sync-initial.yml` | 120 min |
+| `incremental` | Every sync after the first | `sync-incremental.yml` | 20-min slice, 30-min run limit |
+| `initial` | The first 180-day import | `sync-initial.yml` | 25-min slice, 40-min run limit |
+
+A run works a job for at most its **slice**. If the job isn't finished by then, it
+is paused at a page boundary (nothing is lost or redone, and it doesn't count as a
+failed attempt) and the run starts the next run itself, so no import is limited by
+a run's time limit. The page shows "(continuing…)" in between. The slices are set
+in each workflow; a repository variable of the same name
+(`SYNC_INITIAL_SLICE_SECONDS`, `SYNC_INCREMENTAL_SLICE_SECONDS`) overrides one
+without a commit, which is only meant for drills. If a run is killed mid-job, the
+next run in that lane recovers the job within about 2 minutes.
 
 In production, a typical incremental sync goes from click to "Synced" in about a
 minute when the API is awake. The two lanes run independently, so a long first
@@ -313,6 +322,22 @@ scheduled workflows much later than that. You can also start a lane manually:
 
 **Locally**, nothing changes: `uv run python -m app.sync.worker` processes both lanes,
 and no dispatch token is needed.
+
+### Sync alerts
+
+`sync-monitor.yml` checks the production sync queue about hourly (GitHub throttles
+the schedule). **A failed "Sync Monitor" run is the alert**: GitHub emails the repo
+owner. Open the run to see which check fired. Output is counts and 8-character job
+IDs only; look a job up with `select * from sync_jobs where id::text like '<prefix>%'`.
+
+| Alert | Meaning | What to do |
+|---|---|---|
+| **M1** due-but-unclaimed | A job has been due for 15+ minutes and no worker took it | Render logs: `dispatch … rejected: HTTP 401` means the dispatch token expired (rotate it, below). Check the lane workflows aren't disabled (Actions tab; GitHub disables schedules after 60 quiet days). Then run the lane manually: **Actions → Sync Worker (…) → Run workflow**. |
+| **M2** running without progress | A running job hasn't advanced within the stale threshold (15 min) | Usually a killed or hung run. The next run in that lane recovers it; start one manually to do it now. Repeats mean a job keeps crashing its run: check that run's log. |
+| **M3** newly failed | A job failed permanently since the last check; the alert lists each `error_code` | `gmail_reauth_required`: Gmail access expired or was revoked (about weekly while the Google consent screen is in Testing mode). Click **Reconnect Gmail** in the app; history is kept. `generic`: open the failing worker run's log. After three failed attempts, check Gmail/Neon status and the client secret. Each failure alerts once. |
+| **M4** dispatch token expiring | `SYNC_DISPATCH_TOKEN` expires within 21 days | Rotate it (below), then update `SYNC_DISPATCH_TOKEN_EXPIRES_ON` in `sync-monitor.yml`. |
+
+The monitor also fails, and so alerts, if it can't reach the database.
 
 ### Rotating production secrets
 
@@ -341,8 +366,10 @@ lives only on Render, not in GitHub's secrets:
   within seconds.
 - If it expires unnoticed, nothing breaks, but syncs quietly go back to waiting for
   the cron fallback, and Render's logs show `dispatch … was rejected: HTTP 401`.
-- GitHub emails the owner before a token expires. **Also keep a calendar reminder
-  about 2 weeks ahead.** The current token's expiry is recorded in `CLAUDE.md`.
+- GitHub emails the owner before a token expires, and the Sync Monitor's M4 alert
+  fires 21 days ahead. **Also keep a calendar reminder about 2 weeks ahead.** The
+  current token's expiry is recorded in `CLAUDE.md`. After regenerating, update
+  `SYNC_DISPATCH_TOKEN_EXPIRES_ON` in `.github/workflows/sync-monitor.yml`.
 
 After rotating anything, check `/health/ready`, sign in, and (for the database URL,
 Gmail key or dispatch token) click **Sync Gmail** and confirm the run succeeds in

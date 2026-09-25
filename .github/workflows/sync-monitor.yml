@@ -1,0 +1,53 @@
+name: Sync Monitor
+
+# Phase 10 — checks the production sync queue for stuck, failed or expiring
+# state (app/sync/monitor.py). A FAILED RUN IS THE ALERT: GitHub emails the
+# repo owner (the person who last edited this schedule). This repo is public,
+# so the monitor prints counts and short job-ID prefixes only.
+# What each alert means and what to do: README, "Sync alerts".
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Hourly target; GitHub throttles scheduled runs, so expect gaps. Each run
+    # briefly wakes the Neon database.
+    - cron: "23 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+      # Required by app settings but unused by the monitor — placeholders, so
+      # this job never holds the real Google or session secrets.
+      GOOGLE_CLIENT_ID: unused-by-the-monitor
+      GOOGLE_CLIENT_SECRET: unused-by-the-monitor
+      SECRET_KEY: unused-by-the-monitor
+      GMAIL_TOKEN_ENCRYPTION_KEY: unused-by-the-monitor
+      ENV: production
+      # Expiry of the Render SYNC_DISPATCH_TOKEN (a date, not a secret). Update
+      # it whenever the token is rotated (README rotation table).
+      SYNC_DISPATCH_TOKEN_EXPIRES_ON: "2027-09-24"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync --locked
+
+      - name: Check the sync queue
+        working-directory: backend
+        run: uv run python -m app.sync.monitor
