@@ -210,3 +210,45 @@ def test_get_sync_exposes_the_error_code(auth_client: TestClient, db_session, co
     body = auth_client.get(f"{BASE}/sync/{job.id}").json()
 
     assert body["error_code"] == "gmail_reauth_required"
+
+
+def test_start_sync_is_limited_to_10_requests_a_minute_per_user(
+    auth_client: TestClient, other_auth_client: TestClient, connected_gmail, dispatched
+) -> None:
+    statuses = [auth_client.post(f"{BASE}/sync").status_code for _ in range(10)]
+    assert 429 not in statuses
+
+    limited = auth_client.post(f"{BASE}/sync")
+    assert limited.status_code == 429
+    assert 0 < int(limited.headers["Retry-After"]) <= 60
+    assert "Too many requests" in limited.json()["detail"]
+    # Another user has their own allowance (404 here: no Gmail connection).
+    assert other_auth_client.post(f"{BASE}/sync").status_code == 404
+
+
+def test_polling_endpoints_are_never_rate_limited(auth_client: TestClient, connected_gmail, dispatched) -> None:
+    job_id = auth_client.post(f"{BASE}/sync").json()["id"]
+    for _ in range(100):
+        assert auth_client.get(f"{BASE}/sync/{job_id}").status_code == 200
+        assert auth_client.get(f"{BASE}/sync/latest").status_code == 200
+        assert auth_client.get(f"{BASE}/status").status_code == 200
+
+
+def test_rekick_dispatches_at_most_once_per_30_seconds_per_job(
+    auth_client: TestClient, connected_gmail, dispatched, monkeypatch
+) -> None:
+    from app.sync import router as sync_router
+
+    clock = [5000.0]
+    monkeypatch.setattr(sync_router.time, "monotonic", lambda: clock[0])
+    first = auth_client.post(f"{BASE}/sync")
+    auth_client.post(f"{BASE}/sync")  # re-kick
+    third = auth_client.post(f"{BASE}/sync")  # within 30s: no second re-kick
+
+    assert third.status_code == 409
+    assert third.json()["id"] == first.json()["id"]
+    assert dispatched == ["initial", "initial"]
+
+    clock[0] += 31
+    auth_client.post(f"{BASE}/sync")
+    assert dispatched == ["initial", "initial", "initial"]

@@ -232,3 +232,17 @@ def test_messages_endpoint_403_with_a_reconnect_code_when_the_grant_is_gone(
     assert "Reconnect Gmail" in response.json()["detail"]
     db_session.refresh(connected_gmail)
     assert connected_gmail.reauth_required_at is not None
+
+
+def test_messages_endpoint_is_limited_to_5_requests_a_minute(
+    auth_client: TestClient, connected_gmail, monkeypatch
+) -> None:
+    monkeypatch.setattr(google_api, "list_message_ids", lambda token, limit: [])
+    assert all(auth_client.get(f"{BASE}/messages").status_code == 200 for _ in range(5))
+    assert auth_client.get(f"{BASE}/messages").status_code == 429
+
+
+def test_connect_endpoint_is_limited_to_5_requests_a_minute(auth_client: TestClient) -> None:
+    statuses = [auth_client.get(f"{BASE}/connect", follow_redirects=False).status_code for _ in range(6)]
+    assert 429 not in statuses[:5]
+    assert statuses[5] == 429

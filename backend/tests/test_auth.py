@@ -114,3 +114,9 @@ def test_logout_clears_session(auth_client: TestClient) -> None:
 def test_applications_endpoint_requires_authentication(client: TestClient) -> None:
     response = client.get("/api/v1/applications")
     assert response.status_code == 401
+
+
+def test_google_login_is_limited_per_client_address(client) -> None:
+    statuses = [client.get("/api/v1/auth/google/login", follow_redirects=False).status_code for _ in range(21)]
+    assert 429 not in statuses[:20]
+    assert statuses[20] == 429

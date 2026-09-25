@@ -34,7 +34,12 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Job Application Tracker", version="0.1.0", lifespan=lifespan)
+    # No interactive docs or schema in production (Phase 10): nothing needs
+    # them there, and they map every endpoint for anyone who asks.
+    docs = (
+        {"docs_url": None, "redoc_url": None, "openapi_url": None} if settings.env == "production" else {}
+    )
+    app = FastAPI(title="Job Application Tracker", version="0.1.0", lifespan=lifespan, **docs)
 
     # Used only for the few seconds of the OAuth state/nonce handshake —
     # entirely separate from the app's own access_token cookie. Added

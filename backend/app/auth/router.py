@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import COOKIE_NAME, get_current_user
 from app.auth.jwt import create_access_token
 from app.auth.oauth import oauth
+from app.core.ratelimit import limit_per_ip
 from app.core.config import settings
 from app.db.session import get_db
 from app.users.models import User
@@ -16,7 +17,7 @@ from app.users.schemas import UserRead
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.get("/google/login")
+@router.get("/google/login", dependencies=[Depends(limit_per_ip("login", 20))])
 async def google_login(request: Request):
     redirect_uri = f"{settings.frontend_url}/api/v1/auth/google/callback"
     return await oauth.google.authorize_redirect(request, redirect_uri)

@@ -47,3 +47,23 @@ def test_health_worker_returns_503_when_poll_is_stale(
     response = client.get("/health/worker")
     assert response.status_code == 503
     assert response.json()["status"] == "stale"
+
+
+def test_api_docs_are_disabled_in_production(monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from app.core.config import settings
+    from app.main import create_app
+
+    monkeypatch.setattr(settings, "env", "production")
+    client = TestClient(create_app())
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(path).status_code == 404
+
+
+def test_api_docs_stay_available_outside_production() -> None:
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    assert TestClient(create_app()).get("/openapi.json").status_code == 200

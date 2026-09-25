@@ -40,10 +40,10 @@ jobs:
       # Override without a commit via the repo variable of the same name (drills).
       SYNC_INITIAL_SLICE_SECONDS: ${{ vars.SYNC_INITIAL_SLICE_SECONDS || '1500' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.1.0
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
           python-version: "3.12"

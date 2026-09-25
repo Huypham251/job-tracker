@@ -4,6 +4,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
+from app.core.ratelimit import limit_per_user
 from app.core.config import settings
 from app.db.session import get_db
 from app.gmail import service
@@ -14,7 +15,7 @@ from app.users.models import User
 router = APIRouter(prefix="/gmail", tags=["gmail"])
 
 
-@router.get("/connect")
+@router.get("/connect", dependencies=[Depends(limit_per_user("gmail_connect", 5))])
 async def gmail_connect(request: Request, current_user: User = Depends(get_current_user)):
     redirect_uri = f"{settings.frontend_url}/api/v1/gmail/callback"
     return await oauth.google_gmail.authorize_redirect(request, redirect_uri)
@@ -59,7 +60,12 @@ def gmail_disconnect(
     service.disconnect(db, current_user.id)
 
 
-@router.get("/messages", response_model=list[GmailMessageSummary])
+# Up to 51 Gmail API calls per request (Phase 3 test view).
+@router.get(
+    "/messages",
+    response_model=list[GmailMessageSummary],
+    dependencies=[Depends(limit_per_user("gmail_messages", 5))],
+)
 def gmail_messages(
     limit: int = Query(default=20, ge=1, le=50),
     db: Session = Depends(get_db),

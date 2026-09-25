@@ -1,3 +1,4 @@
+import time
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, status
@@ -6,6 +7,7 @@ from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
 from app.auth.dependencies import get_current_user
+from app.core.ratelimit import limit_per_user
 from app.db.session import get_db
 from app.sync import dispatch, service
 from app.sync.exceptions import SyncAlreadyRunning, SyncJobNotFound
@@ -14,8 +16,27 @@ from app.users.models import User
 
 router = APIRouter(prefix="/gmail", tags=["sync"])
 
+# A Sync click on an already-queued job asks for the worker again (Phase 9);
+# repeated clicks re-dispatch at most this often per job (Phase 10). One
+# process, so an in-memory map is enough; a restart only allows one extra.
+REKICK_COOLDOWN_SECONDS = 30.0
+_last_rekick: dict[UUID, float] = {}
 
-@router.post("/sync", response_model=SyncJobRead, status_code=status.HTTP_202_ACCEPTED)
+
+def _rekick_allowed(job_id: UUID, now: float) -> bool:
+    last = _last_rekick.get(job_id)
+    if last is not None and now - last < REKICK_COOLDOWN_SECONDS:
+        return False
+    _last_rekick[job_id] = now
+    return True
+
+
+@router.post(
+    "/sync",
+    response_model=SyncJobRead,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(limit_per_user("sync", 10))],
+)
 def start_sync(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
@@ -33,7 +54,11 @@ def start_sync(
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content=SyncJobRead.model_validate(exc.job).model_dump(mode="json"),
-            background=BackgroundTask(dispatch.request_worker, exc.job.job_type),
+            background=(
+                BackgroundTask(dispatch.request_worker, exc.job.job_type)
+                if _rekick_allowed(exc.job.id, time.monotonic())
+                else None
+            ),
         )
     background_tasks.add_task(dispatch.request_worker, job.job_type)
     return job

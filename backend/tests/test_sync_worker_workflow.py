@@ -119,3 +119,17 @@ def test_monitor_workflow_gets_only_the_database_secret() -> None:
     secrets_used = {value for value in env.values() if "secrets." in str(value)}
     assert secrets_used == {"${{ secrets.PROD_DATABASE_URL }}"}
     assert env["SYNC_DISPATCH_TOKEN_EXPIRES_ON"] == "2027-09-24"
+
+
+SHA_PINNED = re.compile(r"^[\w.-]+/[\w.-]+@[0-9a-f]{40}$")
+
+
+def test_every_workflow_action_is_pinned_to_a_full_commit_sha() -> None:
+    # Tags are mutable; these workflows hold every production secret (Phase 10).
+    workflows = sorted(WORKFLOWS_DIR.glob("*.yml"))
+    assert len(workflows) >= 4
+    for path in workflows:
+        for job in yaml.safe_load(path.read_text())["jobs"].values():
+            for step in job["steps"]:
+                if "uses" in step:
+                    assert SHA_PINNED.match(step["uses"]), f"{path.name}: {step['uses']}"

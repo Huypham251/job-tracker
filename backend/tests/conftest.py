@@ -140,3 +140,17 @@ def other_user(db_session: Session) -> User:
 @pytest.fixture
 def other_auth_client(db_session: Session, other_user: User) -> Iterator[TestClient]:
     yield from _authenticated_client(db_session, other_user)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits(monkeypatch):
+    """Rate-limit counters are process-global; start every test from zero,
+    on a frozen clock so no test straddles a window boundary."""
+    from app.core import ratelimit
+    from app.sync import router as sync_router
+
+    ratelimit.limiter.reset()
+    monkeypatch.setattr(ratelimit.limiter, "_clock", lambda: 1_000_000.0)
+    sync_router._last_rekick.clear()
+    yield
+    ratelimit.limiter.reset()
