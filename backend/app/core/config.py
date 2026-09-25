@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     # instead of requiring a separate `python -m app.sync.worker` process.
     # Defaults false so local dev is unaffected — see app/sync/inprocess.py.
     run_worker_in_process: bool = False
+    # Phase 9 — when both token and repository are set, POST /gmail/sync asks
+    # GitHub to start the matching lane's worker workflow right away
+    # (workflow_dispatch) instead of waiting for its cron fallback. Production
+    # only (Render env); unset locally, where `python -m app.sync.worker` runs
+    # instead. The token is a fine-grained PAT limited to this repo with only
+    # "Actions: write" — see README's "Production deployment".
+    sync_dispatch_token: str | None = None
+    sync_dispatch_repository: str | None = None
+    sync_dispatch_ref: str = "main"
 
     @property
     def cors_origins_list(self) -> list[str]:

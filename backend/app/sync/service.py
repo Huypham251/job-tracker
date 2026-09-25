@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy import select
@@ -63,3 +63,18 @@ def get_latest_job(db: Session, user_id: UUID) -> SyncJob | None:
         .order_by(SyncJob.created_at.desc())
         .limit(1)
     ).one_or_none()
+
+
+def should_rekick(job: SyncJob | None, now: datetime | None = None) -> bool:
+    """Whether a Sync click that hit an already-active job should ask for a
+    worker again (Phase 9): yes if the job is still waiting to be claimed, or
+    if it's "running" but hasn't made progress within the stale threshold —
+    the dispatched run's reaper then requeues and processes it. A healthy
+    running job needs nothing."""
+    if job is None:
+        return False
+    if job.status == "queued":
+        return True
+    now = now or datetime.now(timezone.utc)
+    stale_before = now - timedelta(minutes=settings.sync_stale_job_threshold_minutes)
+    return job.status == "running" and job.updated_at < stale_before

@@ -1,10 +1,14 @@
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app.gmail.crypto import encrypt_token
+from app.core.config import settings
 from app.gmail.models import GmailConnection
+from app.sync import dispatch
+from app.sync.models import SyncJob
 
 BASE = "/api/v1/gmail"
 
@@ -99,3 +103,82 @@ def test_cross_user_isolation(
 
     assert other_auth_client.get(f"{BASE}/sync/{started['id']}").status_code == 404
     assert other_auth_client.get(f"{BASE}/sync/latest").json() is None
+
+
+@pytest.fixture
+def dispatched(monkeypatch) -> list[str]:
+    calls: list[str] = []
+    monkeypatch.setattr(dispatch, "request_worker", lambda job_type: calls.append(job_type) or True)
+    return calls
+
+
+def test_start_sync_dispatches_the_worker_for_the_new_jobs_lane(
+    auth_client: TestClient, connected_gmail, dispatched
+) -> None:
+    response = auth_client.post(f"{BASE}/sync")
+    assert response.status_code == 202
+    assert dispatched == ["initial"]
+
+
+def test_start_sync_still_returns_202_when_dispatch_fails(
+    auth_client: TestClient, connected_gmail, db_session, monkeypatch
+) -> None:
+    # The real request_worker, configured, with GitHub unreachable: the job
+    # must still be created, committed and reported as queued.
+    monkeypatch.setattr(settings, "sync_dispatch_token", "t")
+    monkeypatch.setattr(settings, "sync_dispatch_repository", "owner/repo")
+
+    def unreachable(*args, **kwargs):
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(httpx, "post", unreachable)
+
+    response = auth_client.post(f"{BASE}/sync")
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    job = db_session.get(SyncJob, response.json()["id"])
+    assert job is not None and job.status == "queued"
+
+
+def test_start_sync_rekicks_the_worker_for_an_already_queued_job(
+    auth_client: TestClient, connected_gmail, dispatched
+) -> None:
+    first = auth_client.post(f"{BASE}/sync")
+    second = auth_client.post(f"{BASE}/sync")
+
+    assert second.status_code == 409
+    assert second.json()["id"] == first.json()["id"]
+    assert dispatched == ["initial", "initial"]
+
+
+def test_start_sync_does_not_rekick_a_healthy_running_job(
+    auth_client: TestClient, connected_gmail, db_session, dispatched
+) -> None:
+    job_id = auth_client.post(f"{BASE}/sync").json()["id"]
+    job = db_session.get(SyncJob, job_id)
+    job.status = "running"
+    db_session.commit()
+
+    second = auth_client.post(f"{BASE}/sync")
+
+    assert second.status_code == 409
+    assert second.json()["status"] == "running"
+    assert dispatched == ["initial"]
+
+
+def test_start_sync_rekicks_a_stale_running_job(
+    auth_client: TestClient, connected_gmail, db_session, dispatched
+) -> None:
+    job_id = auth_client.post(f"{BASE}/sync").json()["id"]
+    db_session.execute(
+        SyncJob.__table__.update()
+        .where(SyncJob.__table__.c.id == job_id)
+        .values(status="running", updated_at=datetime.now(timezone.utc) - timedelta(minutes=30))
+    )
+    db_session.commit()
+
+    second = auth_client.post(f"{BASE}/sync")
+
+    assert second.status_code == 409
+    assert dispatched == ["initial", "initial"]
