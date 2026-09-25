@@ -123,8 +123,15 @@ claimed job) and is dropped. The `_SUBDOMAIN_PREFIXES` classifier hazard is out 
 - New `GmailAuthError(GoogleApiError)`: "the grant is no longer usable; only a
   reconnect fixes it". Raised when:
   - token refresh returns 400 with `error == "invalid_grant"`;
-  - any Gmail API call returns **401** (the access token was just refreshed or is
-    within its validity, so a 401 means revoked).
+  - any Gmail API call returns **401**.
+  - **Corrected after the final review (2026-09-25):** the original premise, "the
+    access token was just refreshed or is within its validity, so a 401 means
+    revoked", was wrong. The token was checked once per page with a 60s buffer, and a
+    page of new messages takes ~70–95s, so it can expire mid-page. The worker now
+    checks the token before **every** Gmail call, and a 401 gets **one forced refresh
+    (re-reading the row) and retry** before it counts as reauth. The reauth handler
+    flags only the grant the job used (guarded `UPDATE`), so a Disconnect or Reconnect
+    mid-sync requeues the job instead of leaving it stuck or re-flagging the new grant.
 - Token refresh returning `invalid_client` / `unauthorized_client` stays a **plain**
   `GoogleApiError`: that's an operator misconfiguration (a rotated client secret), not
   the user's grant. It's retried and then fails, and the monitor alerts on it.

@@ -232,13 +232,18 @@ def test_token_and_gmail_failures_end_in_the_right_state(
     elif case == "unreadable_stored_token":
         gmail.access_token_encrypted = "not-a-fernet-token"
         db_session.commit()
-    elif case == "list_401":
+    elif case in ("list_401", "message_401"):
+        # A forced refresh succeeds, but Gmail still answers 401.
+        monkeypatch.setattr(
+            google_api, "refresh_access_token", lambda **kw: {"access_token": "fresh", "expires_in": 3600}
+        )
+    if case == "list_401":
         monkeypatch.setattr(google_api, "list_message_ids_page", _raise(google_api.GmailAuthError("x", status_code=401)))
     elif case == "message_401":
         monkeypatch.setattr(google_api, "get_message", _raise(google_api.GmailAuthError("x", status_code=401)))
     elif case == "list_503":
         monkeypatch.setattr(google_api, "list_message_ids_page", _raise(google_api.GoogleApiError("x", status_code=503)))
-    else:
+    elif case == "list_network_error":
         monkeypatch.setattr(google_api, "list_message_ids_page", _raise(google_api.GoogleApiError("x")))
 
     assert process_job(db_session, job, _Extractor()) == outcome

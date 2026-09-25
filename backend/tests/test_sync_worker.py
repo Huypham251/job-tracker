@@ -1241,6 +1241,7 @@ def test_process_job_fails_fast_and_flags_the_connection_on_reauth(
     job = _make_job(user.id)
     db_session.add(job)
     db_session.commit()
+    _fresh_tokens(monkeypatch)  # the forced refresh succeeds; the retry still 401s
 
     def raise_auth(*args, **kwargs):
         raise google_api.GmailAuthError("revoked", status_code=401)
@@ -1273,6 +1274,7 @@ def test_process_job_treats_a_401_on_a_message_fetch_as_reauth(db_session, user,
     db_session.add(job)
     db_session.commit()
     sleeps = _no_sleep(monkeypatch)
+    _fresh_tokens(monkeypatch)
     monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["m1", "m2", "m3"], None))
     calls = []
 
@@ -1284,7 +1286,7 @@ def test_process_job_treats_a_401_on_a_message_fetch_as_reauth(db_session, user,
 
     process_job(db_session, job, _FakeExtractor({}))
 
-    assert calls == ["m1"]
+    assert calls == ["m1", "m1"]  # once more with a freshly refreshed token, then stop
     assert sleeps == []
     db_session.refresh(job)
     assert job.failed_count == 0
@@ -1615,3 +1617,187 @@ def test_sweep_orphans_fails_a_job_that_has_used_its_last_attempt(db_session, us
     db_session.refresh(orphan)
     assert orphan.status == "failed"
     assert orphan.finished_at is not None
+
+
+def _fresh_tokens(monkeypatch, *, refused: bool = False) -> list[str]:
+    """Stubs Google's token endpoint; records which refresh token was used."""
+    used: list[str] = []
+
+    def refresh(*, client_id, client_secret, refresh_token):
+        used.append(refresh_token)
+        if refused:
+            raise google_api.GmailAuthError("token refresh failed: invalid_grant", status_code=400)
+        return {"access_token": "fresh-access", "expires_in": 3600}
+
+    monkeypatch.setattr(google_api, "refresh_access_token", refresh)
+    return used
+
+
+def test_an_access_token_expiring_mid_page_is_refreshed_not_treated_as_revoked(
+    db_session, user, monkeypatch
+) -> None:
+    # 90s left at page start (> the 60s refresh buffer), but a page of new
+    # messages takes longer than that in production: the token expires
+    # partway through and Gmail answers 401 — that is not a revoked grant.
+    connection = _connect_gmail(db_session, user)
+    connection.token_expiry = datetime.now(timezone.utc) + timedelta(seconds=90)
+    db_session.commit()
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+    used = _fresh_tokens(monkeypatch)
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["m1", "m2", "m3"], None))
+
+    def get_message(token, mid):
+        if token != "fresh-access" and mid != "m1":
+            raise google_api.GmailAuthError("message fetch failed: 401", status_code=401)
+        return _make_summary(mid, f"S {mid}"), "b"
+
+    monkeypatch.setattr(google_api, "get_message", get_message)
+    extractor = _FakeExtractor({f"S m{i}": EmailExtraction(is_job_related=False, confidence=0.99) for i in (1, 2, 3)})
+
+    assert process_job(db_session, job, extractor) == "completed"
+
+    db_session.refresh(connection)
+    assert used == ["refresh"]  # refreshed once, then reused
+    assert connection.reauth_required_at is None
+    assert db_session.query(ProcessedMessage).count() == 3
+
+
+def test_a_401_on_the_page_listing_is_refreshed_and_retried_once(db_session, user, monkeypatch) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+    used = _fresh_tokens(monkeypatch)
+
+    def list_page(token, **kw):
+        if token != "fresh-access":
+            raise google_api.GmailAuthError("message list failed: 401", status_code=401)
+        return [], None
+
+    monkeypatch.setattr(google_api, "list_message_ids_page", list_page)
+
+    assert process_job(db_session, job, _FakeExtractor({})) == "completed"
+    assert used == ["refresh"]
+
+
+def test_a_401_is_reauth_when_google_refuses_the_forced_refresh(db_session, user, monkeypatch) -> None:
+    connection = _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+    _fresh_tokens(monkeypatch, refused=True)
+    monkeypatch.setattr(
+        google_api, "list_message_ids_page",
+        lambda token, **kw: (_ for _ in ()).throw(google_api.GmailAuthError("x", status_code=401)),
+    )
+
+    assert process_job(db_session, job, _FakeExtractor({})) == "failed"
+
+    db_session.refresh(job)
+    db_session.refresh(connection)
+    assert job.error_code == "gmail_reauth_required"
+    assert job.attempts == 0
+    assert connection.reauth_required_at is not None
+
+
+def test_a_disconnect_mid_sync_ends_the_job_cleanly(db_session, user, monkeypatch) -> None:
+    # The user clicks Disconnect while the worker runs: the row is deleted and
+    # the grant revoked. The job must not be left stuck "running".
+    connection = _connect_gmail(db_session, user)
+    connection_id = connection.id
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+    _fresh_tokens(monkeypatch)
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["m1"], None))
+
+    def get_message(token, mid):
+        # Committed, as the API's own request would (a rollback can't undo it).
+        db_session.execute(text("DELETE FROM gmail_connections WHERE id = :id"), {"id": connection_id})
+        db_session.commit()
+        raise google_api.GmailAuthError("message fetch failed: 401", status_code=401)
+
+    monkeypatch.setattr(google_api, "get_message", get_message)
+
+    outcome = process_job(db_session, job, _FakeExtractor({}))  # must not raise
+
+    db_session.refresh(job)
+    assert outcome == "retrying"
+    assert job.status == "queued" and job.attempts == 0
+    # The next claim sees no connection and fails the job the normal way.
+    job.status = "running"
+    db_session.commit()
+    assert process_job(db_session, job, _FakeExtractor({})) == "failed"
+    db_session.refresh(job)
+    assert job.error_message == "Gmail connection no longer exists"
+    assert job.error_code is None
+
+
+def test_a_reconnect_mid_sync_continues_with_the_new_grant(db_session, user, monkeypatch) -> None:
+    # connect() in the API replaces the tokens (and revokes the old grant)
+    # while the worker still holds the old access token.
+    connection = _connect_gmail(db_session, user)
+    connection_id = connection.id
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+    used = _fresh_tokens(monkeypatch)
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["m1"], None))
+    reconnected = []
+
+    def get_message(token, mid):
+        if not reconnected:
+            reconnected.append(True)
+            db_session.execute(
+                text("UPDATE gmail_connections SET refresh_token_encrypted = :r, access_token_encrypted = :a WHERE id = :id"),
+                {"r": encrypt_token("refresh-2"), "a": encrypt_token("access-2"), "id": connection_id},
+            )
+            db_session.commit()  # the API's reconnect, committed
+        if token != "fresh-access":
+            raise google_api.GmailAuthError("message fetch failed: 401", status_code=401)
+        return _make_summary(mid, "S m1"), "b"
+
+    monkeypatch.setattr(google_api, "get_message", get_message)
+    extractor = _FakeExtractor({"S m1": EmailExtraction(is_job_related=False, confidence=0.99)})
+
+    assert process_job(db_session, job, extractor) == "completed"
+
+    assert used == ["refresh-2"]  # refreshed with the new grant, re-read from the row
+    db_session.refresh(connection)
+    assert connection.reauth_required_at is None
+
+
+def test_a_reauth_failure_does_not_flag_a_connection_replaced_by_a_reconnect(
+    db_session, user, monkeypatch
+) -> None:
+    # The job's own grant is refused, but by then a reconnect has put a newer
+    # grant on the row: that new connection must not be flagged; the job is
+    # requeued (no attempt used) to continue with it.
+    connection = _connect_gmail(db_session, user)
+    connection_id = connection.id
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+
+    def list_page(token, **kw):
+        db_session.execute(
+            text("UPDATE gmail_connections SET refresh_token_encrypted = :r WHERE id = :id"),
+            {"r": encrypt_token("refresh-2"), "id": connection_id},
+        )
+        db_session.commit()  # the API's reconnect, committed
+        raise google_api.GmailAuthError("x", status_code=401)
+
+    monkeypatch.setattr(google_api, "list_message_ids_page", list_page)
+    monkeypatch.setattr(
+        gmail_service, "force_refresh_access_token",
+        lambda db, conn: (_ for _ in ()).throw(google_api.GmailAuthError("invalid_grant", status_code=400)),
+    )
+
+    assert process_job(db_session, job, _FakeExtractor({})) == "retrying"
+
+    db_session.refresh(job)
+    db_session.refresh(connection)
+    assert job.status == "queued" and job.attempts == 0
+    assert connection.reauth_required_at is None

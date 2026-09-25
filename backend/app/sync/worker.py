@@ -3,7 +3,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Literal, NamedTuple
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
 from app.classifier.extractor import Extractor, RuleBasedExtractor
@@ -12,6 +12,7 @@ from app.core.privacy import message_ref
 from app.db.session import SessionLocal
 from app.gmail import google_api
 from app.gmail import service as gmail_service
+from app.gmail.models import GmailConnection
 from app.gmail.exceptions import REAUTH_CODE, REAUTH_MESSAGE
 from app.gmail.google_api import GmailAuthError, GoogleApiError
 from app.pipeline import service as pipeline_service
@@ -100,19 +101,37 @@ def _describe_failure(exc: GoogleApiError) -> str:
     return "network error" if exc.status_code is None else f"HTTP {exc.status_code}"
 
 
-def _fetch_message(access_token: str, message_id: str) -> tuple[dict, str]:
+def _call_with_fresh_token(db: Session, connection: GmailConnection, call):
+    """Runs a Gmail call with a valid access token (checked before every call,
+    not once per page: a page of new messages can outlast the token's last
+    minute). A 401 still gets one forced refresh and retry before it counts as
+    a revoked grant — the token may have expired mid-call, or a reconnect may
+    have replaced the grant. GmailAuthError out of here means reconnect."""
+    try:
+        return call(gmail_service.get_valid_access_token(db, connection))
+    except GmailAuthError as exc:
+        if exc.status_code != 401:
+            raise
+    return call(gmail_service.force_refresh_access_token(db, connection))
+
+
+def _fetch_message(db: Session, connection: GmailConnection, message_id: str) -> tuple[dict, str]:
     """get_message with one in-place retry for a transient failure (429, 5xx,
     network). A message skipped here is never written to ProcessedMessage, so
     if it's older than the next incremental window it's never seen again."""
+
+    def fetch(token: str) -> tuple[dict, str]:
+        return google_api.get_message(token, message_id)
+
     try:
-        return google_api.get_message(access_token, message_id)
+        return _call_with_fresh_token(db, connection, fetch)
     except GmailAuthError:
         raise
     except GoogleApiError as exc:
         if not _is_transient(exc):
             raise
         time.sleep(PER_MESSAGE_RETRY_SECONDS)
-        return google_api.get_message(access_token, message_id)
+        return _call_with_fresh_token(db, connection, fetch)
 
 
 def _safe_error_message(exc: Exception) -> str:
@@ -252,13 +271,21 @@ def process_job(
         return "failed"
 
     query = f"after:{job.window_start.strftime('%Y/%m/%d')}"
+    # The grant this job runs on, captured before any rollback can expire the
+    # ORM attributes: a reauth failure may only flag this exact grant, never a
+    # row a mid-sync reconnect has since replaced (or one that's been deleted).
+    connection_id = connection.id
+    grant = connection.refresh_token_encrypted
 
     try:
         while True:
-            access_token = gmail_service.get_valid_access_token(db, connection)
-
-            message_ids, next_page_token = google_api.list_message_ids_page(
-                access_token, query=query, page_token=job.page_token, max_results=PAGE_SIZE
+            page_token = job.page_token
+            message_ids, next_page_token = _call_with_fresh_token(
+                db,
+                connection,
+                lambda token: google_api.list_message_ids_page(
+                    token, query=query, page_token=page_token, max_results=PAGE_SIZE
+                ),
             )
             job.messages_seen += len(message_ids)
             db.commit()
@@ -278,7 +305,7 @@ def process_job(
                     continue
 
                 try:
-                    summary, body = _fetch_message(access_token, message_id)
+                    summary, body = _fetch_message(db, connection, message_id)
                 except GmailAuthError:
                     # The grant is gone — every remaining message would fail
                     # the same way, so abort the job (handled below).
@@ -344,13 +371,27 @@ def process_job(
         # reconnect and enqueue_sync refuses doomed jobs. Same rollback-first
         # rule as the generic handler below.
         db.rollback()
-        logger.warning("Sync job %s stopped: Gmail authorization is no longer valid", job.id)
         now = datetime.now(timezone.utc)
+        flagged = db.execute(
+            update(GmailConnection)
+            .where(GmailConnection.id == connection_id, GmailConnection.refresh_token_encrypted == grant)
+            .values(reauth_required_at=now)
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if not flagged:
+            # The row was deleted (Disconnect) or given a new grant (Reconnect)
+            # while this job ran: requeue without using an attempt. The next
+            # claim fails cleanly ("no longer exists") or runs on the new grant.
+            logger.info("Sync job %s: its Gmail connection changed mid-sync; requeuing", job.id)
+            job.status = "queued"
+            job.next_attempt_at = now
+            db.commit()
+            return "retrying"
+        logger.warning("Sync job %s stopped: Gmail authorization is no longer valid", job.id)
         job.status = "failed"
         job.error_code = REAUTH_CODE
         job.error_message = REAUTH_MESSAGE
         job.finished_at = now
-        connection.reauth_required_at = now
         db.commit()
         return "failed"
     except Exception as exc:

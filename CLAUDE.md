@@ -262,7 +262,13 @@ sourced (paginated, bounded, resumable instead of a flat top-20 fetch).
   `POST /gmail/sync` and `GET /gmail/messages` return **403** with that code (403, not
   409 — the frontend reads a 409 body as the active job). `connect()` clears it and
   keeps `last_synced_message_date`, so Reconnect → next sync is incremental.
-  `invalid_client` (our own client secret) stays generic on purpose.
+  `invalid_client` (our own client secret) stays generic on purpose. **A 401 is only
+  reauth after one forced refresh and retry** (`worker._call_with_fresh_token`,
+  `gmail_service.force_refresh_access_token`): tokens are checked before every Gmail
+  call, since a page of new messages can outlast the token's last minute (found in
+  the final Phase 10 review). The handler flags only the grant the job used (guarded
+  `UPDATE` on id + refresh-token ciphertext); if a mid-sync Disconnect/Reconnect
+  changed the row, the job is requeued without an attempt instead.
 - **Time-sliced jobs (Phase 10).** `process_job(..., deadline=)` checks the deadline
   only after a page's `page_token` commit (every message on it is stored or counted);
   past it, with pages left, the job goes back to `queued` with `next_attempt_at=now`,
@@ -970,9 +976,10 @@ unchanged (auto_apply_rate 0.419).
   failure there raises; the sweep/reaper recovers the job (cheap — all pages done).
 - **7-day monitor observation (M-c) started 2026-09-25** — record false positives and
   Neon compute-hours change around 2026-10-02.
-- **The production Neon password was pasted into a Phase 10 session** for read-only
-  checks — rotate it (README rotation table: Render `DATABASE_URL` + GitHub
-  `PROD_DATABASE_URL`).
+- **Neon password rotated 2026-09-25** after it was pasted into a Phase 10 session
+  for read-only checks: Render `DATABASE_URL` + GitHub `PROD_DATABASE_URL` updated,
+  `/health/ready` 200, monitor run `36134284457` green, a Sync completed, and the old
+  password is refused. (No outstanding action.)
 - **Weekly Gmail reconnect** remains while the consent screen is in Testing (by
   decision; see spec §11.5 for what publishing requires).
 

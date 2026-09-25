@@ -4,6 +4,7 @@ from uuid import UUID
 
 from cryptography.fernet import InvalidToken
 from sqlalchemy import select
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -97,7 +98,22 @@ def connect(db: Session, user_id: UUID, token: dict) -> GmailConnection:
 def get_valid_access_token(db: Session, connection: GmailConnection) -> str:
     if connection.token_expiry - datetime.now(timezone.utc) > REFRESH_BUFFER:
         return _decrypt_or_reauth(connection.access_token_encrypted)
+    return _refresh_access_token(db, connection)
 
+
+def force_refresh_access_token(db: Session, connection: GmailConnection) -> str:
+    """For a Gmail 401 on a token we believed valid (Phase 10): re-read the
+    row first — a reconnect may have replaced the grant meanwhile — then
+    refresh regardless of the stored expiry. Raises GmailAuthError if the
+    row is gone (disconnected) or Google refuses the refresh."""
+    try:
+        db.refresh(connection)
+    except InvalidRequestError as exc:
+        raise google_api.GmailAuthError("Gmail connection was removed") from exc
+    return _refresh_access_token(db, connection)
+
+
+def _refresh_access_token(db: Session, connection: GmailConnection) -> str:
     refresh_token = _decrypt_or_reauth(connection.refresh_token_encrypted)
     token = google_api.refresh_access_token(
         client_id=settings.google_client_id,
