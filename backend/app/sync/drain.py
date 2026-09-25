@@ -1,14 +1,15 @@
 import argparse
 import logging
+import os
 
-from app.sync.worker import LANE_DRAIN_BUDGET_SECONDS, drain_once
+from app.sync.worker import LANES, DrainResult, drain_once, lane_slice_seconds
 
 logger = logging.getLogger(__name__)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> DrainResult:
     parser = argparse.ArgumentParser(description="Drain queued Gmail sync jobs, then exit.")
-    parser.add_argument("--lane", choices=sorted(LANE_DRAIN_BUDGET_SECONDS))
+    parser.add_argument("--lane", choices=LANES)
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO)
@@ -18,11 +19,24 @@ def main(argv: list[str] | None = None) -> int:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     if args.lane is None:
-        count = drain_once()
+        result = drain_once()
     else:
-        count = drain_once(max_runtime_seconds=LANE_DRAIN_BUDGET_SECONDS[args.lane], job_type=args.lane)
-    logger.info("Drained %d job(s)%s", count, f" from the {args.lane} lane" if args.lane else "")
-    return count
+        result = drain_once(
+            max_runtime_seconds=lane_slice_seconds(args.lane), job_type=args.lane, sweep=True
+        )
+    logger.info(
+        "Drained %d job(s)%s%s",
+        result.processed,
+        f" from the {args.lane} lane" if args.lane else "",
+        "; a job was paused at its slice deadline and continues in a new run" if result.requeued else "",
+    )
+    # The lane workflow reads this to decide whether to dispatch itself again
+    # (Phase 10); outside GitHub Actions there's no GITHUB_OUTPUT to write.
+    github_output = os.environ.get("GITHUB_OUTPUT")
+    if github_output:
+        with open(github_output, "a") as fh:
+            fh.write(f"requeued={'true' if result.requeued else 'false'}\n")
+    return result
 
 
 if __name__ == "__main__":

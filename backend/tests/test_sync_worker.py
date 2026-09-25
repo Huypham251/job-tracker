@@ -6,6 +6,7 @@ from sqlalchemy import delete, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.classifier.schemas import EmailExtraction
+from app.core.config import settings
 from app.gmail import google_api
 from app.gmail import service as gmail_service
 from app.gmail.crypto import encrypt_token
@@ -13,12 +14,14 @@ from app.gmail.models import GmailConnection
 from app.pipeline.models import ProcessedMessage
 from app.sync.models import SyncJob
 from app.sync.worker import (
+    DrainResult,
     _safe_error_message,
     claim_next_job,
     drain_once,
     get_last_poll_at,
     process_job,
     reap_stale_jobs,
+    sweep_orphans,
 )
 from app.users.models import User
 
@@ -805,7 +808,7 @@ def test_drain_once_processes_all_queued_jobs_and_returns_the_count(engine, monk
         test_session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
         monkeypatch.setattr(worker_module, "SessionLocal", test_session_factory)
 
-        processed = drain_once()
+        processed = drain_once().processed
 
         assert processed == 3
         with engine.connect() as check_conn:
@@ -839,7 +842,7 @@ def test_drain_once_stops_at_its_time_budget_leaving_jobs_queued(engine, monkeyp
         test_session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
         monkeypatch.setattr(worker_module, "SessionLocal", test_session_factory)
 
-        processed = drain_once(max_runtime_seconds=0)
+        processed = drain_once(max_runtime_seconds=0).processed
 
         assert processed == 0
         with engine.connect() as check_conn:
@@ -988,7 +991,7 @@ def test_drain_once_with_a_lane_leaves_other_lane_jobs_queued(engine, monkeypatc
     try:
         monkeypatch.setattr(worker_module, "SessionLocal", sessionmaker(bind=engine, future=True))
 
-        assert drain_once(job_type="incremental") == 1
+        assert drain_once(job_type="incremental").processed == 1
 
         statuses = _job_statuses(engine, [initial_id, incremental_id])
         assert statuses[incremental_id] == "failed"  # no Gmail connection -> fast fail
@@ -1017,7 +1020,7 @@ def test_drain_once_waits_for_a_retry_due_within_its_budget(engine, monkeypatch)
         clock.sleep = sleep_for_real
         monkeypatch.setattr(worker_module, "time", clock)
 
-        assert drain_once(max_runtime_seconds=60, job_type="incremental") == 1
+        assert drain_once(max_runtime_seconds=60, job_type="incremental").processed == 1
         assert len(clock.sleeps) == 1 and 0 < clock.sleeps[0] <= 4
         assert _job_statuses(engine, [job_id])[job_id] == "failed"
     finally:
@@ -1034,7 +1037,7 @@ def test_drain_once_does_not_wait_for_a_retry_beyond_its_budget(engine, monkeypa
         clock = _FakeClock()
         monkeypatch.setattr(worker_module, "time", clock)
 
-        assert drain_once(max_runtime_seconds=60, job_type="incremental") == 0
+        assert drain_once(max_runtime_seconds=60, job_type="incremental").processed == 0
         assert clock.sleeps == []
         assert _job_statuses(engine, [job_id])[job_id] == "queued"
     finally:
@@ -1051,7 +1054,7 @@ def test_drain_once_does_not_wait_for_another_lanes_retry(engine, monkeypatch) -
         clock = _FakeClock()
         monkeypatch.setattr(worker_module, "time", clock)
 
-        assert drain_once(max_runtime_seconds=60, job_type="incremental") == 0
+        assert drain_once(max_runtime_seconds=60, job_type="incremental").processed == 0
         assert clock.sleeps == []
     finally:
         _cleanup_committed(engine, [user_id], [job_id])
@@ -1089,12 +1092,12 @@ def test_drain_once_exits_instead_of_spinning_when_a_due_job_is_locked_elsewhere
     import app.sync.worker as worker_module
 
     monkeypatch.setattr(worker_module, "SessionLocal", _StubSession)
-    monkeypatch.setattr(worker_module, "_run_one_tick", lambda db, job_type=None: None)
+    monkeypatch.setattr(worker_module, "_run_one_tick", lambda db, job_type=None, deadline=None: (None, None))
     monkeypatch.setattr(worker_module, "_seconds_until_next_retry", lambda db, job_type: 0.0)
     clock = _FakeClock()
     monkeypatch.setattr(worker_module, "time", clock)
 
-    assert drain_once(max_runtime_seconds=60, job_type="incremental") == 0
+    assert drain_once(max_runtime_seconds=60, job_type="incremental").processed == 0
     assert clock.sleeps == []
 
 
@@ -1305,3 +1308,310 @@ def test_process_job_keeps_retrying_generic_failures_without_an_error_code(
     db_session.refresh(job)
     assert job.status == "failed"
     assert job.error_code is None
+
+
+def _two_page_job(db_session, user, monkeypatch, *, started_at=None):
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id, started_at=started_at)
+    db_session.add(job)
+    db_session.commit()
+    pages = [(["m1"], "page-2"), (["m2"], None)]
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: pages.pop(0))
+    monkeypatch.setattr(google_api, "get_message", lambda token, mid: (_make_summary(mid, f"S {mid}"), "b"))
+    extractor = _FakeExtractor(
+        {
+            "S m1": EmailExtraction(is_job_related=False, confidence=0.99),
+            "S m2": EmailExtraction(is_job_related=False, confidence=0.99),
+        }
+    )
+    return job, extractor
+
+
+def test_process_job_yields_at_a_page_boundary_after_its_deadline(db_session, user, monkeypatch) -> None:
+    import app.sync.worker as worker_module
+
+    started = datetime.now(timezone.utc) - timedelta(minutes=1)
+    job, extractor = _two_page_job(db_session, user, monkeypatch, started_at=started)
+    monkeypatch.setattr(worker_module.time, "monotonic", lambda: 100.0)
+
+    outcome = process_job(db_session, job, extractor, deadline=50.0)
+
+    db_session.refresh(job)
+    assert outcome == "yielded"
+    assert job.status == "queued"
+    assert job.attempts == 0
+    assert job.page_token == "page-2"
+    assert job.started_at == started
+    assert job.next_attempt_at <= datetime.now(timezone.utc)
+    assert job.messages_processed == 1
+    assert job.finished_at is None
+    assert db_session.query(ProcessedMessage).filter_by(gmail_message_id="m1").count() == 1
+    assert db_session.query(ProcessedMessage).filter_by(gmail_message_id="m2").count() == 0
+
+
+def test_a_yielded_job_resumes_from_its_checkpoint_and_completes(db_session, user, monkeypatch) -> None:
+    import app.sync.worker as worker_module
+
+    job, extractor = _two_page_job(db_session, user, monkeypatch, started_at=datetime.now(timezone.utc))
+    monkeypatch.setattr(worker_module.time, "monotonic", lambda: 100.0)
+    assert process_job(db_session, job, extractor, deadline=50.0) == "yielded"
+
+    seen_tokens = []
+    monkeypatch.setattr(
+        google_api, "list_message_ids_page",
+        lambda token, *, query, page_token, max_results: seen_tokens.append(page_token) or (["m2"], None),
+    )
+    assert process_job(db_session, job, extractor, deadline=None) == "completed"
+
+    assert seen_tokens == ["page-2"]
+    db_session.refresh(job)
+    assert job.status == "completed"
+    assert job.attempts == 0
+    assert job.messages_processed == 2
+    assert db_session.query(ProcessedMessage).count() == 2
+
+
+def test_process_job_completes_instead_of_yielding_on_the_last_page(db_session, user, monkeypatch) -> None:
+    import app.sync.worker as worker_module
+
+    connection = _connect_gmail(db_session, user)
+    job = _make_job(user.id, started_at=datetime.now(timezone.utc))
+    db_session.add(job)
+    db_session.commit()
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: ([], None))
+    monkeypatch.setattr(worker_module.time, "monotonic", lambda: 100.0)
+
+    assert process_job(db_session, job, _FakeExtractor({}), deadline=50.0) == "completed"
+
+    db_session.refresh(connection)
+    assert connection.last_synced_message_date is not None
+
+
+def test_process_job_makes_one_page_of_progress_even_with_an_expired_deadline(
+    db_session, user, monkeypatch
+) -> None:
+    import app.sync.worker as worker_module
+
+    job, extractor = _two_page_job(db_session, user, monkeypatch)
+    monkeypatch.setattr(worker_module.time, "monotonic", lambda: 100.0)
+
+    assert process_job(db_session, job, extractor, deadline=0.0) == "yielded"
+
+    assert db_session.query(ProcessedMessage).filter_by(gmail_message_id="m1").count() == 1
+
+
+def test_process_job_does_not_yield_before_its_deadline(db_session, user, monkeypatch) -> None:
+    import app.sync.worker as worker_module
+
+    job, extractor = _two_page_job(db_session, user, monkeypatch)
+    monkeypatch.setattr(worker_module.time, "monotonic", lambda: 10.0)
+
+    assert process_job(db_session, job, extractor, deadline=50.0) == "completed"
+
+
+def test_process_job_reports_retrying_and_failed_outcomes(db_session, user, monkeypatch) -> None:
+    _connect_gmail(db_session, user)
+    retrying = _make_job(user.id)
+    db_session.add(retrying)
+    db_session.commit()
+    monkeypatch.setattr(
+        google_api, "list_message_ids_page",
+        lambda token, **kw: (_ for _ in ()).throw(google_api.GoogleApiError("down", status_code=503)),
+    )
+    assert process_job(db_session, retrying, _FakeExtractor({})) == "retrying"
+
+    retrying.status = "completed"
+    last_try = _make_job(user.id, attempts=2, max_attempts=3)
+    db_session.add(last_try)
+    db_session.commit()
+    assert process_job(db_session, last_try, _FakeExtractor({})) == "failed"
+
+
+def test_lane_slice_seconds_reads_settings(monkeypatch) -> None:
+    from app.core.config import settings
+    from app.sync.worker import lane_slice_seconds
+
+    monkeypatch.setattr(settings, "sync_initial_slice_seconds", 120)
+    monkeypatch.setattr(settings, "sync_incremental_slice_seconds", 90)
+    assert lane_slice_seconds("initial") == 120.0
+    assert lane_slice_seconds("incremental") == 90.0
+
+
+def test_slice_settings_default_to_the_approved_values() -> None:
+    from app.core.config import Settings
+
+    fields = Settings.model_fields
+    assert fields["sync_initial_slice_seconds"].default == 1500
+    assert fields["sync_incremental_slice_seconds"].default == 1200
+    assert fields["sync_orphan_threshold_seconds"].default == 120
+
+
+def _age(db_session, job, seconds: int) -> None:
+    db_session.execute(
+        text("UPDATE sync_jobs SET updated_at = now() - make_interval(secs => :s) WHERE id = :id"),
+        {"s": seconds, "id": job.id},
+    )
+    db_session.commit()
+
+
+def test_sweep_orphans_requeues_its_lanes_abandoned_running_job(db_session, user) -> None:
+    orphan = _make_job(user.id, job_type="initial", status="running", page_token="page-7")
+    db_session.add(orphan)
+    db_session.commit()
+    _age(db_session, orphan, 300)
+
+    assert sweep_orphans(db_session, "initial") == 1
+
+    db_session.refresh(orphan)
+    assert orphan.status == "queued"
+    assert orphan.attempts == 1  # an orphan still costs an attempt: a crash-looping job must end
+    assert orphan.page_token == "page-7"  # resumes from its checkpoint
+    # Due again immediately: backoff is for flaky upstreams, and this job's
+    # "failure" was a killed runner.
+    assert orphan.next_attempt_at <= datetime.now(timezone.utc)
+
+
+def test_sweep_orphans_leaves_fresh_jobs_and_other_lanes_alone(db_session, user, other_user) -> None:
+    fresh = _make_job(user.id, job_type="initial", status="running")
+    other_lane = _make_job(other_user.id, job_type="incremental", status="running")
+    db_session.add_all([fresh, other_lane])
+    db_session.commit()
+    _age(db_session, fresh, 30)
+    _age(db_session, other_lane, 300)
+
+    assert sweep_orphans(db_session, "initial") == 0
+
+    db_session.refresh(fresh)
+    db_session.refresh(other_lane)
+    assert fresh.status == "running"
+    assert other_lane.status == "running"
+
+
+def test_drain_once_passes_its_deadline_and_stops_after_a_yield(engine, monkeypatch) -> None:
+    import app.sync.worker as worker_module
+
+    user_id, job_id = _commit_user_and_job(engine, "yield-drain", job_type="initial")
+    try:
+        monkeypatch.setattr(worker_module, "SessionLocal", sessionmaker(bind=engine, future=True))
+        clock = _FakeClock()
+        monkeypatch.setattr(worker_module, "time", clock)
+        deadlines = []
+
+        def yielding(db, job, extractor=None, *, deadline=None):
+            deadlines.append(deadline)
+            job.status = "queued"  # what a real yield leaves behind: due again immediately
+            db.commit()
+            return "yielded"
+
+        monkeypatch.setattr(worker_module, "process_job", yielding)
+
+        result = drain_once(max_runtime_seconds=90, job_type="initial")
+
+        assert result == DrainResult(processed=1, requeued=True)
+        assert deadlines == [90.0]  # start (0) + budget; called once, not re-claimed
+        assert _job_statuses(engine, [job_id])[job_id] == "queued"
+    finally:
+        _cleanup_committed(engine, [user_id], [job_id])
+
+
+def test_drain_once_sweeps_orphans_once_before_claiming_when_asked(monkeypatch) -> None:
+    import app.sync.worker as worker_module
+
+    events = []
+    monkeypatch.setattr(worker_module, "SessionLocal", _StubSession)
+    monkeypatch.setattr(worker_module, "sweep_orphans", lambda db, job_type: events.append(("sweep", job_type)) or 0)
+
+    def tick(db, job_type=None, deadline=None):
+        events.append(("tick", job_type))
+        return None, None
+
+    monkeypatch.setattr(worker_module, "_run_one_tick", tick)
+    monkeypatch.setattr(worker_module, "_seconds_until_next_retry", lambda db, job_type: None)
+    monkeypatch.setattr(worker_module, "time", _FakeClock())
+
+    assert drain_once(max_runtime_seconds=60, job_type="initial", sweep=True) == DrainResult(0, False)
+    assert events == [("sweep", "initial"), ("tick", "initial")]
+
+    events.clear()
+    drain_once(max_runtime_seconds=60, job_type="initial")
+    assert events == [("tick", "initial")]
+
+
+def test_a_failing_orphan_sweep_does_not_block_draining(monkeypatch) -> None:
+    import app.sync.worker as worker_module
+
+    ticks = []
+    monkeypatch.setattr(worker_module, "SessionLocal", _StubSession)
+
+    def broken_sweep(db, job_type):
+        raise RuntimeError("sweep exploded")
+
+    monkeypatch.setattr(worker_module, "sweep_orphans", broken_sweep)
+    monkeypatch.setattr(worker_module, "_run_one_tick", lambda db, job_type=None, deadline=None: ticks.append(1) or (None, None))
+    monkeypatch.setattr(worker_module, "_seconds_until_next_retry", lambda db, job_type: None)
+    monkeypatch.setattr(worker_module, "time", _FakeClock())
+
+    drain_once(max_runtime_seconds=60, job_type="initial", sweep=True)
+
+    assert ticks == [1]
+
+
+def test_drain_once_waits_out_the_threshold_for_a_freshly_abandoned_job(engine, monkeypatch) -> None:
+    # A run killed seconds before this drain started leaves a "running" job
+    # too fresh for the first sweep; the drain must wait out the rest of the
+    # threshold and recover it, not leave it for the 15-minute reaper.
+    import time as real_time
+
+    import app.sync.worker as worker_module
+
+    monkeypatch.setattr(settings, "sync_orphan_threshold_seconds", 2)
+    user_id, job_id = _commit_user_and_job(engine, "fresh-orphan", job_type="initial", status="running")
+    try:
+        monkeypatch.setattr(worker_module, "SessionLocal", sessionmaker(bind=engine, future=True))
+        clock = _FakeClock()
+
+        def sleep_for_real(seconds: float) -> None:
+            # updated_at is compared against real database time.
+            clock.sleeps.append(seconds)
+            clock.now += seconds
+            real_time.sleep(seconds)
+
+        clock.sleep = sleep_for_real
+        monkeypatch.setattr(worker_module, "time", clock)
+
+        result = drain_once(max_runtime_seconds=60, job_type="initial", sweep=True)
+
+        assert len(clock.sleeps) == 1 and 0 < clock.sleeps[0] <= 4
+        assert result.processed == 1  # recovered and claimed in this same run
+        assert _job_statuses(engine, [job_id])[job_id] == "failed"  # no Gmail connection -> fast fail
+    finally:
+        _cleanup_committed(engine, [user_id], [job_id])
+
+
+def test_drain_once_does_not_wait_when_no_running_job_exists(monkeypatch) -> None:
+    import app.sync.worker as worker_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(worker_module, "SessionLocal", _StubSession)
+    monkeypatch.setattr(worker_module, "sweep_orphans", lambda db, job_type: 0)
+    monkeypatch.setattr(worker_module, "_seconds_until_running_job_is_orphaned", lambda db, job_type: None)
+    monkeypatch.setattr(worker_module, "_run_one_tick", lambda db, job_type=None, deadline=None: (None, None))
+    monkeypatch.setattr(worker_module, "_seconds_until_next_retry", lambda db, job_type: None)
+    monkeypatch.setattr(worker_module, "time", clock)
+
+    drain_once(max_runtime_seconds=60, job_type="initial", sweep=True)
+
+    assert clock.sleeps == []
+
+
+def test_sweep_orphans_fails_a_job_that_has_used_its_last_attempt(db_session, user) -> None:
+    orphan = _make_job(user.id, job_type="initial", status="running", attempts=2, max_attempts=3)
+    db_session.add(orphan)
+    db_session.commit()
+    _age(db_session, orphan, 300)
+
+    sweep_orphans(db_session, "initial")
+
+    db_session.refresh(orphan)
+    assert orphan.status == "failed"
+    assert orphan.finished_at is not None

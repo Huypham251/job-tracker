@@ -42,6 +42,16 @@ class Settings(BaseSettings):
     # updated_at hasn't moved in this long is treated as orphaned by a crash
     # (see worker.py's reap_stale_jobs), not as still legitimately working.
     sync_stale_job_threshold_minutes: int = Field(default=15, gt=0)
+    # Phase 10 — each lane drain works a job for at most this long, then
+    # checkpoints it at a page boundary and requeues it without using an
+    # attempt; the lane workflow re-dispatches itself to continue. The lane
+    # workflows set these explicitly (next to their timeout-minutes).
+    sync_initial_slice_seconds: int = Field(default=1500, gt=0)
+    sync_incremental_slice_seconds: int = Field(default=1200, gt=0)
+    # Phase 10 — at drain start, a "running" job in the drain's own lane that
+    # hasn't committed for this long was abandoned by a killed run (a healthy
+    # job commits after every message). See worker.sweep_orphans.
+    sync_orphan_threshold_seconds: int = Field(default=120, gt=0)
     # Production only (set via the Render Web Service's environment) — starts
     # sync/worker.py's run_forever() on a background thread at FastAPI startup
     # instead of requiring a separate `python -m app.sync.worker` process.

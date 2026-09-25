@@ -9,10 +9,13 @@ on:
 
 permissions:
   contents: read
+  # Only for the last step: a run whose job hit its slice deadline dispatches
+  # this workflow again to continue it (Phase 10).
+  actions: write
 
-# One drain per lane at a time. Never cancel-in-progress: killing a drain
-# mid-job leaves that job "running" until a later run's reaper requeues it,
-# costing it an attempt.
+# One drain per lane at a time — the next run's orphan sweep relies on it
+# (a "running" job in this lane at drain start was abandoned). Never
+# cancel-in-progress: killing a drain mid-job costs that job an attempt.
 concurrency:
   group: sync-initial
   cancel-in-progress: false
@@ -20,10 +23,10 @@ concurrency:
 jobs:
   drain:
     runs-on: ubuntu-latest
-    # A 180-day initial import of a ~6,500-message mailbox took ~75 min at the
-    # Phase 8 rate; the drain's own 100-minute budget exits cleanly first. A
-    # single job still can't be paused mid-way (time-slicing is deferred).
-    timeout-minutes: 120
+    # One 25-minute slice (below) plus at most one page and setup. A long
+    # initial import pauses at the slice deadline (checkpointed, no attempt
+    # used) and continues in a new run, so no import is bound by this timeout.
+    timeout-minutes: 40
     env:
       DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
       GOOGLE_CLIENT_ID: ${{ secrets.PROD_GOOGLE_CLIENT_ID }}
@@ -34,6 +37,7 @@ jobs:
       FRONTEND_URL: https://job-tracker-1-ldy2.onrender.com
       ENV: production
       COOKIE_SECURE: "true"
+      SYNC_INITIAL_SLICE_SECONDS: "1500"
     steps:
       - uses: actions/checkout@v4
 
@@ -48,5 +52,16 @@ jobs:
         run: uv sync --locked
 
       - name: Drain sync queue
+        id: drain
         working-directory: backend
         run: uv run python -m app.sync.drain --lane initial
+
+      # A job that reached its slice deadline was checkpointed and requeued
+      # without using an attempt — start the next slice now instead of
+      # waiting for the throttled cron. A workflow_dispatch sent with
+      # GITHUB_TOKEN does create a run; concurrency queues it behind this one.
+      - name: Continue a paused job in a new run
+        if: steps.drain.outputs.requeued == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run sync-initial.yml --ref main --repo ${{ github.repository }}

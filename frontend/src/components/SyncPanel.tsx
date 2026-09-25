@@ -100,6 +100,9 @@ export function SyncPanel({ onSyncCompleted }: Props) {
   }
 
   const isActive = job?.status === 'queued' || job?.status === 'running'
+  // A long job pauses at its slice deadline and is requeued to continue in a
+  // new worker run — it has started_at set, unlike a job that never ran.
+  const resuming = job?.status === 'queued' && job.started_at !== null
   const needsReconnect =
     reauthRefused || (job?.status === 'failed' && job.error_code === GMAIL_REAUTH_CODE)
   const waitingTooLong =
@@ -118,15 +121,15 @@ export function SyncPanel({ onSyncCompleted }: Props) {
         </button>
       </div>
       {error && <p className="text-sm text-red-700">{error}</p>}
-      {job && job.status === 'queued' && (
+      {job && job.status === 'queued' && !resuming && (
         <p className="text-sm text-gray-600">
           Starting {job.job_type === 'initial' ? 'your first Gmail import' : 'sync'}…
         </p>
       )}
-      {job && job.status === 'running' && (
+      {job && (job.status === 'running' || resuming) && (
         <p className="text-sm text-gray-600">
           {job.job_type === 'initial' ? 'Importing' : 'Syncing'} — {job.messages_processed} of{' '}
-          {job.messages_seen || '?'} messages processed.
+          {job.messages_seen || '?'} messages processed{resuming ? ' (continuing…)' : '.'}
         </p>
       )}
       {job && isActive && job.job_type === 'initial' && (

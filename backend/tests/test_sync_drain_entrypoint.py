@@ -2,6 +2,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from app.sync.worker import DrainResult
+
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -34,17 +38,17 @@ def test_drain_main_passes_the_lane_and_its_budget(monkeypatch) -> None:
     import app.sync.drain as drain_module
 
     calls = []
-    monkeypatch.setattr(drain_module, "drain_once", lambda **kw: calls.append(kw) or 2)
+    monkeypatch.setattr(drain_module, "drain_once", lambda **kw: calls.append(kw) or DrainResult(2, False))
 
-    assert drain_module.main(["--lane", "incremental"]) == 2
-    assert calls == [{"max_runtime_seconds": 1200.0, "job_type": "incremental"}]
+    assert drain_module.main(["--lane", "incremental"]) == DrainResult(2, False)
+    assert calls == [{"max_runtime_seconds": 1200.0, "job_type": "incremental", "sweep": True}]
 
 
 def test_drain_main_without_a_lane_keeps_the_legacy_behavior(monkeypatch) -> None:
     import app.sync.drain as drain_module
 
     calls = []
-    monkeypatch.setattr(drain_module, "drain_once", lambda **kw: calls.append(kw) or 0)
+    monkeypatch.setattr(drain_module, "drain_once", lambda **kw: calls.append(kw) or DrainResult(0, False))
 
     drain_module.main([])
     assert calls == [{}]
@@ -55,7 +59,45 @@ def test_drain_main_silences_per_request_http_logging(monkeypatch) -> None:
 
     import app.sync.drain as drain_module
 
-    monkeypatch.setattr(drain_module, "drain_once", lambda **kw: 0)
+    monkeypatch.setattr(drain_module, "drain_once", lambda **kw: DrainResult(0, False))
     drain_module.main(["--lane", "initial"])
     assert logging.getLogger("httpx").level == logging.WARNING
     assert logging.getLogger("httpcore").level == logging.WARNING
+
+
+def test_drain_main_uses_the_configured_slice_for_the_lane(monkeypatch) -> None:
+    import app.sync.drain as drain_module
+    from app.core.config import settings
+
+    calls = []
+    monkeypatch.setattr(settings, "sync_initial_slice_seconds", 120)
+    monkeypatch.setattr(drain_module, "drain_once", lambda **kw: calls.append(kw) or DrainResult(0, False))
+
+    drain_module.main(["--lane", "initial"])
+    assert calls[0]["max_runtime_seconds"] == 120.0
+
+
+@pytest.mark.parametrize("requeued,expected", [(True, "requeued=true\n"), (False, "requeued=false\n")])
+def test_drain_main_reports_a_paused_job_to_github_actions(monkeypatch, tmp_path, requeued, expected) -> None:
+    import app.sync.drain as drain_module
+
+    output = tmp_path / "github_output"
+    output.write_text("earlier=1\n")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setattr(drain_module, "drain_once", lambda **kw: DrainResult(1, requeued))
+
+    drain_module.main(["--lane", "initial"])
+
+    assert output.read_text() == "earlier=1\n" + expected
+
+
+def test_drain_main_writes_nothing_outside_github_actions(monkeypatch, tmp_path) -> None:
+    import app.sync.drain as drain_module
+
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(drain_module, "drain_once", lambda **kw: DrainResult(1, True))
+
+    drain_module.main(["--lane", "initial"])
+
+    assert list(tmp_path.iterdir()) == []

@@ -5,7 +5,7 @@ import pytest
 
 from app.core.config import settings
 from app.sync import dispatch
-from app.sync.worker import LANE_DRAIN_BUDGET_SECONDS
+from app.sync.worker import LANES
 
 WORKFLOWS_DIR = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 SECRET = "github_pat_test_value_never_logged"
@@ -33,7 +33,7 @@ def visible_logs(monkeypatch):
 
 
 def test_every_lane_dispatches_to_a_workflow_that_exists() -> None:
-    for lane in LANE_DRAIN_BUDGET_SECONDS:
+    for lane in LANES:
         assert (WORKFLOWS_DIR / dispatch.workflow_file(lane)).is_file()
 
 
