@@ -168,8 +168,10 @@ rule-based classifier (`backend/app/classifier/`).
    button shows live progress while the job runs and a summary when it finishes.
    Classification and extraction themselves never leave your machine and call no
    external service.
-2. **The background worker must be running** for a sync job to actually be processed —
-   clicking "Sync Gmail" only enqueues the job. In a second terminal, from `backend/`:
+2. **Locally, the background worker must be running** for a sync job to actually be
+   processed — clicking "Sync Gmail" only enqueues the job. (In production the API
+   starts a GitHub Actions worker itself; see "Production deployment".) In a second
+   terminal, from `backend/`:
    ```
    uv run python -m app.sync.worker
    ```
@@ -205,10 +207,13 @@ Everything runs on free tiers ($0/month):
 
 ```
 Browser -> Render Static Site (frontend)  --rewrite /api/* -->  Render Web Service (FastAPI)
-                                                                     |
-GitHub Actions: ci.yml (PR gate)                                     v
-                sync-worker.yml (scheduled) -- python -m app.sync.drain --> Neon Postgres
-                                                                         -> Gmail API
+                                                                  |   \
+                                                                  |    \ "Sync Gmail": save job, then
+                                                                  v     \ ask GitHub to start the worker
+GitHub Actions: ci.yml (CI checks)                           Neon Postgres  |
+                sync-incremental.yml / sync-initial.yml  <------------------+
+                  (on demand, cron fallback) -- python -m app.sync.drain --lane <lane>
+                                                   -> Neon Postgres, Gmail API
 ```
 
 | Piece | Where | Notes |
@@ -216,7 +221,7 @@ GitHub Actions: ci.yml (PR gate)                                     v
 | Frontend | Render Static Site, <https://job-tracker-1-ldy2.onrender.com> | No env vars. All API calls are relative `/api/...` paths. |
 | API | Render free Web Service, <https://job-tracker-lds1.onrender.com> | Reached through the frontend's rewrite, so the browser only ever sees one origin. |
 | Database | Neon Postgres (free) | Autosuspends when idle. |
-| Sync worker | GitHub Actions, `.github/workflows/sync-worker.yml` | Drains queued sync jobs, then exits. It does **not** run inside the API. |
+| Sync worker | GitHub Actions: `.github/workflows/sync-incremental.yml` and `sync-initial.yml` | Started on demand by the API when a sync is queued (cron every 15 min as a fallback). Drains its lane's queued jobs, then exits. It does **not** run inside the API. |
 | CI | GitHub Actions, `.github/workflows/ci.yml` | `backend` and `frontend` are required checks on `main`. |
 
 **Deploy flow:** changes land on `main`, and Render auto-deploys both services from
@@ -240,7 +245,8 @@ schema.
    - Environment: `DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
      `SECRET_KEY`, `GMAIL_TOKEN_ENCRYPTION_KEY`, `CORS_ORIGINS` and `FRONTEND_URL`
      (both set to the frontend's URL), `ENV=production`, `COOKIE_SECURE=true`,
-     `RUN_WORKER_IN_PROCESS=false`. See `.env.example` for what each one is.
+     `RUN_WORKER_IN_PROCESS=false`, plus the three sync-dispatch settings in
+     step 6. See `.env.example` for what each one is.
      Generate `SECRET_KEY` and `GMAIL_TOKEN_ENCRYPTION_KEY` fresh for production
      (commands in the OAuth/Gmail sections above). Never reuse local values.
 3. **Render Static Site** (frontend):
@@ -257,22 +263,56 @@ schema.
 5. **GitHub → Settings → Secrets and variables → Actions:** add
    `PROD_DATABASE_URL`, `PROD_GOOGLE_CLIENT_ID`, `PROD_GOOGLE_CLIENT_SECRET`,
    `PROD_SECRET_KEY` and `PROD_GMAIL_TOKEN_ENCRYPTION_KEY`, all with the **same
-   values** as the Render service. The frontend URL is hard-coded in
-   `sync-worker.yml`; update it there if it ever changes.
-6. **Verify:**
+   values** as the Render service. The frontend URL is hard-coded in both
+   `sync-*.yml` workflows; update it there if it ever changes.
+6. **Sync-dispatch token** (lets the API start the worker immediately):
+   - Create a **fine-grained personal access token** at
+     <https://github.com/settings/personal-access-tokens/new>. Set
+     **Repository access** to *Only select repositories* (this repo only),
+     **Repository permissions** to **Actions: Read and write** (GitHub adds
+     read-only Metadata automatically), nothing else, and **Expiration** to **1 year**.
+   - Copy it straight into the Render backend's Environment as
+     `SYNC_DISPATCH_TOKEN`, and add `SYNC_DISPATCH_REPOSITORY=<owner>/<repo>` and
+     `SYNC_DISPATCH_REF=main`. The token lives **only** on Render; GitHub's Actions
+     secrets don't need it.
+   - **Set a calendar reminder about 2 weeks before it expires** (see the rotation
+     table below).
+   - Without these three settings, everything still works; syncs just wait for the
+     cron fallback.
+7. **Verify:**
    - `curl https://<backend>.onrender.com/health/ready` returns 200.
      (`/health/worker` returns 503 `not_running` in production. That's expected,
      because the worker runs in Actions, not in the API.)
-   - Sign in, connect Gmail, click **Sync Gmail**, and confirm the next scheduled
-     *Sync Worker* run in the Actions tab logs `Drained 1 job(s)`.
+   - Sign in, connect Gmail, and click **Sync Gmail**. Within seconds, the Actions
+     tab should show a *Sync Worker* run with event `workflow_dispatch`, and its log
+     should end with `Drained 1 job(s) from the … lane`.
 
 ### Running the sync worker
 
-A sync clicked in the UI only **queues** a job. The scheduled workflow picks it up.
-It's set to every 5 minutes, but GitHub runs scheduled workflows on a best-effort
-basis, and in practice this one runs about every 2–5 hours. To process a sync right
-away, open **Actions → Sync Worker → Run workflow**. Only one drain runs at a time
-(`concurrency`), and each run has a 120-minute limit.
+Clicking **Sync Gmail** saves a job, returns straight away, and then asks GitHub
+to start the worker workflow for that job's **lane**:
+
+| Lane | Used for | Workflow | Time limit |
+|---|---|---|---|
+| `incremental` | Every sync after the first | `sync-incremental.yml` | 30 min |
+| `initial` | The first 180-day import | `sync-initial.yml` | 120 min |
+
+In production, a typical incremental sync goes from click to "Synced" in about a
+minute when the API is awake. The two lanes run independently, so a long first
+import never holds up anyone's incremental sync. Each lane runs one worker at a
+time. If a transient error forces a retry, the same run waits for it rather than
+leaving it for later.
+
+**If starting the worker fails** (token missing, expired or rejected; GitHub down;
+the API restarting at the wrong moment), the sync request still succeeds and the job
+stays safely queued. The page shows "Starting sync…". After 2 minutes it adds a
+**Retry** link, which asks for the worker again for the same job. Each lane's
+workflow also runs every 15 minutes as a fallback, though GitHub often runs
+scheduled workflows much later than that. You can also start a lane manually:
+**Actions → Sync Worker (incremental|initial) → Run workflow**.
+
+**Locally**, nothing changes: `uv run python -m app.sync.worker` processes both lanes,
+and no dispatch token is needed.
 
 ### Rotating production secrets
 
@@ -288,16 +328,39 @@ redeploys the service.
 | `GOOGLE_CLIENT_SECRET` | Google Console → Clients → your client → add a new secret, deploy it, then disable and delete the old one | If you do it in that order, nothing breaks. Stored Gmail refresh tokens stay valid (they're tied to the client ID). |
 | `GMAIL_TOKEN_ENCRYPTION_KEY` | `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | **Every stored Gmail connection becomes unreadable.** The dashboard still says "Connected", but syncs fail until each user clicks **Disconnect**, removes the app at <https://myaccount.google.com/permissions> (the app can't revoke the old grant itself any more), then clicks **Connect Gmail**. Applications and review history are kept. Disconnecting resets the sync watermark, so the next sync is a full 180-day one. Already-processed messages are skipped, so it's quick. |
 
-After rotating, check `/health/ready`, sign in, and (for the database URL or Gmail
-key) run the Sync Worker once from the Actions tab and confirm it succeeds.
+**`SYNC_DISPATCH_TOKEN`** (GitHub fine-grained token, **expires after 1 year**)
+lives only on Render, not in GitHub's secrets:
+
+- **Before it expires**, go to <https://github.com/settings/personal-access-tokens>,
+  open the token and choose **Regenerate token**. Permissions and repository access
+  carry over; set a new 1-year expiry.
+- Copy the new value **straight into** Render's `SYNC_DISPATCH_TOKEN`, save, and wait
+  for Live. The old value stops working as soon as you regenerate, so do both steps
+  together.
+- Verify: click **Sync Gmail**, and the Actions tab shows a `workflow_dispatch` run
+  within seconds.
+- If it expires unnoticed, nothing breaks, but syncs quietly go back to waiting for
+  the cron fallback, and Render's logs show `dispatch … was rejected: HTTP 401`.
+- GitHub emails the owner before a token expires. **Also keep a calendar reminder
+  about 2 weeks ahead.** The current token's expiry is recorded in `CLAUDE.md`.
+
+After rotating anything, check `/health/ready`, sign in, and (for the database URL,
+Gmail key or dispatch token) click **Sync Gmail** and confirm the run succeeds in
+the Actions tab.
 
 ### Free-tier limitations
 
 - The API sleeps after 15 minutes idle. The first request after that takes about
   30–60 seconds.
-- Syncs are queued, and they can wait hours for the next scheduled run (see above).
-- GitHub turns off scheduled workflows in a public repo after 60 days without a
-  commit. Re-enable them from the Actions tab.
+- The sync worker starts on demand in about 15–30 seconds, but only if the
+  dispatch token is valid. The cron fallback that catches failed starts is
+  best-effort, and GitHub often runs it hours late.
+- GitHub turns off scheduled workflows (the fallback) in a public repo after 60 days
+  without a commit. Starting the worker on demand keeps working; re-enable the
+  schedules from the Actions tab.
+- A single first import still has to finish within its lane's 120-minute limit
+  (roughly 10,000+ messages at the measured rate). Splitting it into resumable time
+  slices is a planned improvement.
 - Google expires Gmail authorizations for apps in "Testing" mode after about 7 days,
   so expect to reconnect Gmail roughly weekly.
 - Render's free instance has 512 MB of memory and no metrics, which is why sync

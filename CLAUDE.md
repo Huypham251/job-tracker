@@ -6,14 +6,15 @@ a spec — the specs under `docs/superpowers/specs/` and plans under
 
 ## Status
 
-Phases 1–8 are complete and merged to `main`, and the app is **deployed to production**
-(Render + Neon + GitHub Actions, $0/month — see "Phase 8 results" below; production
-path verified end-to-end 2026-09-24). Phase 5 was manually verified end-to-end
+Phases 1–9 are complete and merged to `main`, and the app is **deployed to production**
+(Render + Neon + GitHub Actions, $0/month — see "Phase 8 results" and "Phase 9 results"
+below; production paths verified end-to-end 2026-09-24). Phase 5 was manually verified end-to-end
 against a real Gmail account (2026-09-17) — see "Manual testing findings" below — and
 Phase 6 was manually verified the same way (2026-09-20) — see "Phase 6 manual testing
-findings" below. Backend: 301/301 tests passing (281 after Phase 7, plus Phase 8's
+findings" below. Backend: 344/344 tests passing (281 after Phase 7; Phase 8 added
 health/heartbeat, in-process-worker, drain-entrypoint, workflow-config and
-key-rotation reconnect/disconnect tests).
+key-rotation tests; Phase 9 added lane, retry-wait, dispatch, re-kick, single-fetch
+and log-privacy tests).
 Frontend:
 `tsc -b` clean, `oxlint` clean (0 errors, 3 pre-existing warnings in
 `AuthContext.tsx`/`useApplications.ts`, unrelated to any phase and not touched by any of
@@ -51,6 +52,13 @@ them). Working tree clean, no uncommitted changes.
   Render service — see "Phase 8 results" for why the spec's original in-process design
   was abandoned). Six real bugs/constraints found only during live deployment were
   fixed along the way.
+- Phase 9: on-demand sync — a Sync click now starts the worker within seconds
+  (the API calls GitHub's `workflow_dispatch` right after committing the job, with
+  cron kept only as a fallback), and initial imports and incremental syncs run in
+  **separate lanes** (`sync-initial.yml` / `sync-incremental.yml`). Also: retries are
+  waited for within the same run, each Gmail message is fetched once instead of
+  twice, message IDs are kept out of the public worker logs, and the Sync panel
+  shows "Starting…" vs "Syncing…" with a Retry. See "Phase 9 results".
 
 **Read `2026-09-15-job-tracker-phase-4-pipeline-design.md` for the pipeline architecture
 that's still current (matching, trust model, DB schema, `/pipeline/review*` API,
@@ -60,7 +68,9 @@ for the sync job queue/worker.** All three specs carry supersession banners poin
 whichever of the others changed their original decisions. For production,
 `2026-09-21-job-tracker-phase-8-production-deployment-design.md` covers hosting,
 secrets, OAuth and CI — but its §3.3 in-process worker design was superseded during
-deployment (banner at its top); "Phase 8 results" below is the current truth.
+deployment (banner at its top); "Phase 8 results" below is the current truth for
+hosting. **For how syncs are triggered and run today, read
+`2026-09-24-job-tracker-phase-9-on-demand-sync-design.md` and "Phase 9 results".**
 
 ## Architecture
 
@@ -93,33 +103,43 @@ backend/app/
 │   │                        index enforces one active job per user)
 │   ├── schemas.py           SyncJobRead
 │   ├── service.py             enqueue_sync (initial vs incremental decision + 409
-│   │                            on an already-active job), get_job, get_latest_job
+│   │                            on an already-active job), get_job, get_latest_job,
+│   │                            should_rekick (Phase 9)
 │   ├── router.py               /api/v1/gmail/sync* (POST /sync, GET /sync/{id},
-│   │                            GET /sync/latest)
-│   ├── worker.py                 claim_next_job (FOR UPDATE SKIP LOCKED),
-│   │                               process_job (pagination + retry/backoff),
-│   │                               reap_stale_jobs, _run_one_tick (shared
-│   │                               reap+claim+process), run_forever (local dev:
-│   │                               `uv run python -m app.sync.worker`), drain_once
-│   │                               (Phase 8: drain until empty or 240s budget)
-│   ├── drain.py                    Phase 8 — production entrypoint,
-│   │                               `python -m app.sync.drain`, run by the scheduled
-│   │                               GitHub Actions workflow
+│   │                            GET /sync/latest); POST /sync schedules a
+│   │                            best-effort dispatch as a background task (Phase 9)
+│   ├── dispatch.py              Phase 9 — request_worker(job_type): POST GitHub
+│   │                            workflow_dispatch for sync-<job_type>.yml; never raises
+│   ├── worker.py                 claim_next_job / reap_stale_jobs (FOR UPDATE SKIP
+│   │                               LOCKED; optional job_type lane filter), process_job
+│   │                               (pagination + retry/backoff), _run_one_tick (shared
+│   │                               reap+claim+process), run_forever (local dev, all
+│   │                               lanes: `uv run python -m app.sync.worker`),
+│   │                               drain_once (drain one lane until idle or its budget;
+│   │                               waits for near-term retries), LANE_DRAIN_BUDGET_SECONDS
+│   ├── drain.py                    production entrypoint,
+│   │                               `python -m app.sync.drain --lane <lane>`, run by the
+│   │                               lane workflows; silences httpx request logging
 │   └── inprocess.py                Phase 8 — optional worker thread inside the API
 │                                   (RUN_WORKER_IN_PROCESS); OFF in production, see
 │                                   "Phase 8 results"
 ├── main.py           /health (liveness), /health/ready (DB ping), /health/worker
 │                     (in-process heartbeat — always 503 in production, by design now)
 ├── db/session.py     engine with pool_pre_ping=True (Phase 8, for Neon)
+├── core/privacy.py   Phase 9 — message_ref(id): hashed stand-in for Gmail message IDs in logs
 └── core/config.py    Settings — gmail_sync_backfill_days, sync_stale_job_threshold_minutes,
-                      run_worker_in_process
+                      run_worker_in_process, sync_dispatch_token/_repository/_ref
 
 .github/workflows/
 ├── ci.yml            Phase 8 — backend pytest + evaluation.compare; frontend tsc/oxlint/
 │                     build. Required checks ("backend", "frontend") on `main`
-└── sync-worker.yml   Phase 8 — production sync worker: cron */5 + workflow_dispatch,
-                      concurrency group "sync-worker" (never cancel-in-progress),
-                      timeout-minutes 120, PROD_* repo secrets
+├── sync-incremental.yml  Phase 9 — incremental lane: workflow_dispatch (from the API)
+│                         + cron */15 fallback, concurrency "sync-incremental",
+│                         timeout 30 min, drain budget 20 min
+└── sync-initial.yml      Phase 9 — initial-import lane: same triggers, concurrency
+                          "sync-initial", timeout 120 min, budget 100 min. Both use the
+                          PROD_* repo secrets and a read-only GITHUB_TOKEN; they
+                          replaced Phase 8's single sync-worker.yml
 
 frontend/src/
 ├── components/ApplicationsPage.tsx   dashboard shell: Gmail panel, SyncPanel,
@@ -241,10 +261,16 @@ sourced (paginated, bounded, resumable instead of a flat top-20 fetch).
   `FOR UPDATE SKIP LOCKED` and are believed safe with more than one worker process, but
   only one worker process has ever actually been run against this code. If a second
   worker is introduced, re-verify the reasoning in the Phase 5 spec's §2 concurrency
-  discussion before trusting it. **Production is deliberately kept single-worker**:
-  `sync-worker.yml`'s `concurrency` group serializes scheduled drains, and
-  `RUN_WORKER_IN_PROCESS` is `false` on Render — turning it on would add a second
-  worker (and reintroduce the OOM problem, see "Phase 8 results").
+  discussion before trusting it. **Production runs at most one worker per lane**
+  (Phase 9): each lane workflow's `concurrency` group serializes its drains, and the
+  two lanes claim and reap **disjoint row sets** (`job_type`), so no two processes
+  ever compete for the same rows. That's covered by a real two-connection test
+  (`test_two_lanes_claim_concurrently_without_blocking_or_stealing`) but **was not
+  verified in production with two lanes running at once** (it would need a second
+  Gmail account doing a real initial import; deliberately not set up).
+  `RUN_WORKER_IN_PROCESS` stays `false` on Render — turning it on would add an
+  all-lanes worker inside the API (and reintroduce the OOM problem, see
+  "Phase 8 results").
 - **The old Phase 4 "ReviewQueue only fetches once on mount" staleness gap is fixed.**
   (Noted here only so a search for it in old notes doesn't mislead — `ReviewQueue`'s
   `refreshSignal` prop, bumped by `ApplicationsPage` on sync completion/failure, closes
@@ -595,7 +621,10 @@ and `docs/superpowers/plans/2026-09-21-job-tracker-phase-8-production-deployment
 Deployment/setup steps and secret-rotation procedures live in `README.md`'s
 "Production deployment" section — not duplicated here.
 
-### Production architecture (current, $0/month)
+### Production architecture ($0/month; sync trigger superseded by Phase 9)
+
+> Phase 9 replaced `sync-worker.yml` with two dispatchable lane workflows, started by
+> the API on every Sync click. Everything else below still holds.
 
 ```
 Browser ──> Render Static Site  https://job-tracker-1-ldy2.onrender.com
@@ -701,10 +730,10 @@ rotation table.
 
 ### Free-tier limitations (accepted, not bugs)
 
-- **Sync latency is hours, not minutes.** GitHub treats cron as best-effort and heavily
-  throttles it: `*/5` produced ~11 runs/day (gaps of ~2–5h) over 2026-09-23/24. A
-  queued job waits for the next run; `workflow_dispatch` ("Run workflow") is the
-  on-demand escape hatch.
+- **Sync latency was hours, not minutes (fixed in Phase 9).** GitHub treats cron as
+  best-effort and heavily throttles it: `*/5` produced ~11 runs/day (gaps of ~2–5h)
+  over 2026-09-23/24. Phase 9 made `workflow_dispatch` the primary trigger; cron is
+  now only a fallback.
 - **GitHub disables a public repo's scheduled workflows after 60 days without a
   commit.** Re-enable from the Actions tab (or push a commit) after a quiet period.
 - **Render Web Service spins down after 15 min idle**; first request takes ~30–60s.
@@ -721,8 +750,9 @@ rotation table.
 
 ### Known gaps added by Phase 8 (not fixed)
 
-- **`process_job` has no time budget of its own.** `drain_once`'s 240s budget is
-  checked only between jobs. A job that outlives the 120-minute workflow timeout (or
+- **`process_job` has no time budget of its own** (still true after Phase 9, which
+  deferred the fix — see "Phase 9 results"). A lane's drain budget is checked only
+  between jobs. A job that outlives the 120-minute workflow timeout (or
   a runner that dies) is left `running`; the *next* scheduled run's reaper requeues
   it with `attempts += 1`, and three such losses fail it permanently. `page_token` is
   checkpointed per page, so no work is lost. Proper fix: have `process_job` stop
@@ -733,6 +763,102 @@ rotation table.
   was pushed straight to `main`. Harmless for a single maintainer; turn it on if that
   matters.
 - **No rate limiting** on any endpoint, including `POST /gmail/sync` (spec §11).
+
+## Phase 9 results — on-demand sync with lanes (2026-09-24)
+
+Spec/plan: `docs/superpowers/specs/2026-09-24-job-tracker-phase-9-on-demand-sync-design.md`
+and `docs/superpowers/plans/2026-09-24-job-tracker-phase-9-on-demand-sync.md`.
+Setup, sync behavior and the dispatch-token rotation procedure are in `README.md`'s
+"Production deployment" section.
+
+**The problem:** Phase 8's sync engine worked, but it only ran when GitHub's throttled
+cron fired (every 2–5 hours in practice), so a Sync click could wait hours for a job
+that then took under a minute. A single worker lane also meant a long initial import
+could hold up everyone's incremental syncs.
+
+**What changed** (each checkpoint was reviewed and pushed separately, with CI green):
+1. **Lanes** (`9d2092f`) — `claim_next_job` / `reap_stale_jobs` / `drain_once` take an
+   optional `job_type`; `python -m app.sync.drain --lane incremental|initial`. No
+   migration: `job_type` already existed. `drain_once` also **waits for a queued
+   retry** that falls due within its budget (backoff is 60s/120s), instead of leaving
+   it for a later run, but exits immediately if a due job is locked by another worker.
+   Public-log privacy: `httpx`/`httpcore` are set to WARNING in the drain entrypoint, and
+   `message_ref(id)` replaces raw Gmail message IDs in worker/pipeline warnings.
+2. **Two lane workflows** (`b8063c9`) — `sync-incremental.yml` (30 min) and
+   `sync-initial.yml` (120 min) replaced `sync-worker.yml`.
+3. **Dispatch + re-kick** (`4812bd7`) — after `POST /gmail/sync` commits a job, a
+   background task calls GitHub's workflow-dispatch API for that lane. It's
+   best-effort: 5s timeout, **never raises**, logs lane + HTTP status only. A click
+   that hits the user's already-active job (the existing 409) re-dispatches if that
+   job is still `queued`, or `running` but stale.
+4. **One Gmail call per message** (`cfb7f61`) — `google_api.get_message()` does a
+   single `format=full` fetch returning `(summary, body)`; `get_message_body` is gone.
+5. **Frontend** (`d1e1686`) — "Starting sync…" (queued) vs "Syncing — N of M"
+   (running); an initial-import note; a Retry link after 2 min in the queue; the Sync
+   panel is hidden until Gmail is connected.
+
+**Dispatch token (production config, never in git):** a fine-grained PAT named
+`job-tracker-sync-dispatch`, repository access **only `Huypham251/job-tracker`**,
+repository permissions **Actions: Read and write** + mandatory **Metadata: Read-only**,
+no user permissions. Created **2026-09-24**; **expires 2027-09-24.** It lives only in the
+Render backend's `SYNC_DISPATCH_TOKEN` (plus `SYNC_DISPATCH_REPOSITORY=Huypham251/job-tracker`,
+`SYNC_DISPATCH_REF=main`). **Regenerate it and update Render before 2027-09-24** —
+reminder target 2027-09-10. The procedure is in README's rotation section. If it lapses,
+nothing breaks, but syncs silently fall back to cron latency and Render logs `dispatch …
+rejected: HTTP 401`.
+
+**Observed, not explained:** probing the token with deliberately invalid requests
+showed GitHub accepting its `issues=write` check on `job-tracker` (an empty issue got a
+422 validation error rather than a 403), even though the token's settings page lists
+only Actions + Metadata. On a public repo the token *wasn't* given, the same request
+is refused (403). Pull requests, contents, secrets and repo settings are all refused
+(403). Accepted as GitHub-side behavior: at worst a leaked token could open issues or
+comments on this public repo, which any GitHub account can already do. (A first,
+non-invalid probe accidentally created a test issue, #6, which was deleted right away.)
+
+### Production verification (2026-09-24, times UTC on 2026-09-25)
+
+- **Warm backend:** Sync clicked 06:33 → `Sync Worker (incremental)` run
+  `36103421214`, `event: workflow_dispatch`, created 06:33:47, drain started 06:33:57,
+  finished 06:34:16 with `Drained 1 job(s) from the incremental lane`. **About 1 minute
+  from click to "Synced"** in the UI, with "Starting sync…", "Syncing — N of M" and
+  "Synced: …" all seen in order. (Before Phase 9: up to ~5 hours.)
+- **Cold backend** (API idle ~32 min, 06:42→07:14): the page loaded in under a minute
+  while Render woke the API. Sync clicked 07:14 → run `36106612260`
+  (`workflow_dispatch`) created 07:14:06, `Drained 1 job(s) from the incremental lane`
+  at 07:14:25, finished 07:14:29. **Under 1 minute from click to "Synced"**, so the
+  wake-up cost landed on the page load, not on the sync.
+- **Failure drill:** `SYNC_DISPATCH_REPOSITORY` set to a nonexistent repo → Sync click
+  returned normally, the job stayed `queued` ("Starting sync…"), Render logged
+  `Sync worker dispatch for the incremental lane was rejected: HTTP 404`, and **no run
+  started** (06:34→06:41). Repository restored → the **Retry** link appeared after 2 min
+  → click → run `36104019837` (`workflow_dispatch`, 06:41:41) drained the same job.
+- **Cron fallback:** a `schedule` run of the new incremental lane ran at 06:23:22.
+- **Both lanes valid on GitHub:** manual dispatches of each (runs `36081651533`,
+  `36081654353`) drained only their own lane (`Drained 0 job(s) from the initial lane`).
+  That's the only production evidence of lane separation.
+- **Public logs:** no `gmail.googleapis.com/…/messages` URLs and no raw 16-hex message
+  IDs in any Phase 9 run log.
+- **Not verified in production (by decision):** an initial import and an incremental
+  sync running **at the same time** in the two lanes. That would need a second real
+  Gmail account. It rests on the automated two-connection test (see the multi-worker
+  note in "Known gaps").
+
+### Known gaps / future work after Phase 9
+
+- **Time-sliced initial imports (deferred by decision).** One initial job still runs to
+  completion inside one run, bounded by the lane's 120-minute timeout (roughly 10,000
+  messages at the measured rate). The deferred design is in the Phase 9 spec §10:
+  stop between pages at a deadline, re-queue without using an attempt, and have the run
+  dispatch its own lane again.
+- **The Retry hint can show for a legitimately waiting initial import.** If one user's
+  initial import queues behind another user's in the same lane, "The sync worker
+  hasn't started yet" appears after 2 min. Retry is harmless there (the pending run is
+  simply re-requested).
+- **The cron fallback is still GitHub-throttled** and is disabled after 60 quiet days
+  in a public repo. It only matters when dispatch fails.
+- **No rate limiting** (unchanged): re-kicks are bounded only by one active job per
+  user, and repeated dispatches collapse to one pending run per lane.
 
 ## Local dev environment (this machine)
 

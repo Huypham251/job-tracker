@@ -1,7 +1,7 @@
 # Job Application Tracker — Phase 9 Design: On-Demand Sync with Separate Import/Incremental Lanes
 
 **Date:** 2026-09-24
-**Status:** Approved 2026-09-24 (two-lane design now; time-slicing deferred; 1-year dispatch token; lane isolation verified by automated test only)
+**Status:** Implemented and verified in production 2026-09-24 (results in CLAUDE.md, "Phase 9 results"). Approved 2026-09-24 (two-lane design now; time-slicing deferred; 1-year dispatch token; lane isolation verified by automated test only)
 **Scope:** Make an explicit "Sync Gmail" click start processing within seconds instead
 of waiting hours for GitHub's throttled cron, without moving sync work back into the
 Render API. The queue, worker, retry/backoff, reaper, idempotency, classifier,

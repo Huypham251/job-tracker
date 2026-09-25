@@ -10,6 +10,12 @@
 > domain, not the backend's (`50dba5b`). §6 was corrected in place. For the current
 > architecture, see CLAUDE.md's "Phase 8 results" and README's "Production
 > deployment".
+>
+> **Further superseded by Phase 9 (2026-09-24):** the single cron-driven
+> `sync-worker.yml` became two lane workflows (`sync-incremental.yml`,
+> `sync-initial.yml`) that the API starts on demand via `workflow_dispatch`, with cron
+> kept only as a fallback. See
+> `2026-09-24-job-tracker-phase-9-on-demand-sync-design.md`.
 
 **Date:** 2026-09-21
 **Status:** Draft — awaiting approval
