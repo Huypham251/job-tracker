@@ -2,11 +2,12 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.classifier.extractor import Extractor, RuleBasedExtractor
 from app.core.config import settings
+from app.core.privacy import message_ref
 from app.db.session import SessionLocal
 from app.gmail import google_api
 from app.gmail import service as gmail_service
@@ -84,7 +85,7 @@ def _safe_error_message(exc: Exception) -> str:
     return "Sync failed due to an unexpected error. Try again; contact support if this keeps happening."
 
 
-def reap_stale_jobs(db: Session) -> None:
+def reap_stale_jobs(db: Session, job_type: str | None = None) -> None:
     """A 'running' job whose updated_at hasn't advanced in
     settings.sync_stale_job_threshold_minutes was orphaned by a crash in one of
     process_job's own bookkeeping commits (a DB-level failure inside
@@ -94,17 +95,17 @@ def reap_stale_jobs(db: Session) -> None:
     this it would block that user's syncs forever via uq_sync_jobs_user_active.
     Reuses the same attempts/backoff/terminal-failure semantics process_job's
     own exception handler already has; page_token is left untouched so a
-    requeued job resumes from its last checkpoint."""
+    requeued job resumes from its last checkpoint. job_type limits it to one
+    lane (Phase 9), so a lane's worker never touches the other lane's jobs."""
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=settings.sync_stale_job_threshold_minutes)
     # skip_locked, matching claim_next_job's idiom, so this stays safe if a
     # second worker process is ever introduced: a row genuinely still being
     # written by a live process is held by that process's own transaction
     # and gets skipped here rather than double-processed.
-    stale_jobs = db.scalars(
-        select(SyncJob)
-        .where(SyncJob.status == "running", SyncJob.updated_at < cutoff)
-        .with_for_update(skip_locked=True)
-    ).all()
+    query = select(SyncJob).where(SyncJob.status == "running", SyncJob.updated_at < cutoff)
+    if job_type is not None:
+        query = query.where(SyncJob.job_type == job_type)
+    stale_jobs = db.scalars(query.with_for_update(skip_locked=True)).all()
     for job in stale_jobs:
         logger.warning("Reaping stale sync job %s (no progress since %s)", job.id, job.updated_at)
         _requeue_or_fail(job, "Sync stalled and was not recovered automatically. Try syncing again.")
@@ -112,13 +113,14 @@ def reap_stale_jobs(db: Session) -> None:
         db.commit()
 
 
-def claim_next_job(db: Session) -> SyncJob | None:
+def claim_next_job(db: Session, job_type: str | None = None) -> SyncJob | None:
+    query = select(SyncJob).where(
+        SyncJob.status == "queued", SyncJob.next_attempt_at <= datetime.now(timezone.utc)
+    )
+    if job_type is not None:
+        query = query.where(SyncJob.job_type == job_type)
     job = db.scalars(
-        select(SyncJob)
-        .where(SyncJob.status == "queued", SyncJob.next_attempt_at <= datetime.now(timezone.utc))
-        .order_by(SyncJob.created_at)
-        .limit(1)
-        .with_for_update(skip_locked=True)
+        query.order_by(SyncJob.created_at).limit(1).with_for_update(skip_locked=True)
     ).one_or_none()
     if job is None:
         return None
@@ -170,7 +172,7 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
                     summary = google_api.get_message_summary(access_token, message_id)
                     body = google_api.get_message_body(access_token, message_id)
                 except GoogleApiError:
-                    logger.warning("Skipping message %s: fetch failed", message_id)
+                    logger.warning("Skipping message %s: fetch failed", message_ref(message_id))
                     job.failed_count += 1
                     job.messages_processed += 1
                     db.commit()
@@ -232,16 +234,17 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
     db.commit()
 
 
-def _run_one_tick(db: Session) -> SyncJob | None:
+def _run_one_tick(db: Session, job_type: str | None = None) -> SyncJob | None:
     """One reap+claim+process cycle — shared by run_forever() (loops forever,
     sleeping between empty ticks; used by local dev's separate
     `python -m app.sync.worker` process, per CLAUDE.md's documented
     workflow) and drain_once() below (loops until the queue is empty or a
-    time budget is hit, then returns; used by the Render Cron Job
-    entrypoint in production). Returns the claimed job, if any, so callers
-    can tell an empty tick (nothing to do) from a worked one."""
+    time budget is hit, then returns; used by the GitHub Actions workflows
+    in production, via app/sync/drain.py). Returns the claimed job, if any, so callers
+    can tell an empty tick (nothing to do) from a worked one. job_type, when
+    given, restricts both reaping and claiming to that lane."""
     try:
-        reap_stale_jobs(db)
+        reap_stale_jobs(db, job_type=job_type)
     except Exception:
         # A best-effort janitor must never block the primary work — roll
         # back to a clean session, then log, and still attempt
@@ -251,7 +254,7 @@ def _run_one_tick(db: Session) -> SyncJob | None:
         # uniform means it stays safe if one is ever added here.
         db.rollback()
         logger.exception("Stale-job reaper failed; continuing")
-    job = claim_next_job(db)
+    job = claim_next_job(db, job_type=job_type)
     if job is not None:
         process_job(db, job)
     return job
@@ -275,32 +278,62 @@ def run_forever(poll_interval: float = POLL_INTERVAL_SECONDS) -> None:
 
 DRAIN_MAX_RUNTIME_SECONDS = 240.0
 
+# Per-lane drain budgets for the GitHub Actions workflows (Phase 9), each below
+# its workflow's timeout-minutes (30 / 120) so a run exits cleanly between jobs
+# instead of being killed mid-job.
+LANE_DRAIN_BUDGET_SECONDS: dict[str, float] = {"incremental": 20 * 60.0, "initial": 100 * 60.0}
 
-def drain_once(max_runtime_seconds: float = DRAIN_MAX_RUNTIME_SECONDS) -> int:
-    """Processes queued sync jobs until none remain or max_runtime_seconds is
-    exceeded, then returns the number processed. Used by the Render Cron Job
-    entrypoint (app/sync/drain.py) — production no longer runs the worker
-    in-process alongside the API, nor as a separate always-on process there;
-    a Cron Job invokes this on a schedule instead, draining whatever's
-    queued and exiting. Local dev is unaffected — it keeps using
-    run_forever() as documented in CLAUDE.md's "Local dev environment"
-    section."""
+# A retry is requeued with next_attempt_at a little in the future; sleep this
+# much past it so claim_next_job's `next_attempt_at <= now` is sure to pass.
+_RETRY_WAIT_SLACK_SECONDS = 1.0
+
+
+def _seconds_until_next_retry(db: Session, job_type: str | None) -> float | None:
+    query = select(func.min(SyncJob.next_attempt_at)).where(SyncJob.status == "queued")
+    if job_type is not None:
+        query = query.where(SyncJob.job_type == job_type)
+    next_at = db.scalar(query)
+    if next_at is None:
+        return None
+    return max(0.0, (next_at - datetime.now(timezone.utc)).total_seconds())
+
+
+def drain_once(max_runtime_seconds: float = DRAIN_MAX_RUNTIME_SECONDS, job_type: str | None = None) -> int:
+    """Processes queued sync jobs (only one lane's job_type, if given) until
+    none are due or max_runtime_seconds is exceeded, then returns the number
+    processed. Used by the GitHub Actions workflows via app/sync/drain.py —
+    production never runs the worker in the API process. When nothing is due
+    but a queued retry becomes due within the remaining budget, it waits for
+    that retry instead of leaving it for the next run, which may be a
+    cron-triggered one hours away. Local dev keeps using run_forever(), as
+    documented in CLAUDE.md's "Local dev environment" section."""
     start = time.monotonic()
     processed = 0
     while time.monotonic() - start < max_runtime_seconds:
         _record_poll()
         db = SessionLocal()
         job = None
+        wait = None
         try:
-            job = _run_one_tick(db)
+            job = _run_one_tick(db, job_type=job_type)
+            if job is None:
+                wait = _seconds_until_next_retry(db, job_type)
         except Exception:
             logger.exception("Unhandled error in drain loop")
             db.rollback()
         finally:
             db.close()
-        if job is None:
+        if job is not None:
+            processed += 1
+            continue
+        remaining = max_runtime_seconds - (time.monotonic() - start)
+        # wait == 0 means a due job exists that claim_next_job couldn't take
+        # (row-locked by another worker) — leave it to that worker rather
+        # than re-polling every second until the budget runs out.
+        if wait is None or wait <= 0 or wait + _RETRY_WAIT_SLACK_SECONDS >= remaining:
             return processed
-        processed += 1
+        logger.info("Waiting %.0fs for a queued retry", wait)
+        time.sleep(wait + _RETRY_WAIT_SLACK_SECONDS)
     logger.warning("drain_once hit its %.0fs time budget with jobs possibly still queued", max_runtime_seconds)
     return processed
 

@@ -28,3 +28,34 @@ def test_drain_module_can_configure_orm_mappers_standalone() -> None:
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_drain_main_passes_the_lane_and_its_budget(monkeypatch) -> None:
+    import app.sync.drain as drain_module
+
+    calls = []
+    monkeypatch.setattr(drain_module, "drain_once", lambda **kw: calls.append(kw) or 2)
+
+    assert drain_module.main(["--lane", "incremental"]) == 2
+    assert calls == [{"max_runtime_seconds": 1200.0, "job_type": "incremental"}]
+
+
+def test_drain_main_without_a_lane_keeps_the_legacy_behavior(monkeypatch) -> None:
+    import app.sync.drain as drain_module
+
+    calls = []
+    monkeypatch.setattr(drain_module, "drain_once", lambda **kw: calls.append(kw) or 0)
+
+    drain_module.main([])
+    assert calls == [{}]
+
+
+def test_drain_main_silences_per_request_http_logging(monkeypatch) -> None:
+    import logging
+
+    import app.sync.drain as drain_module
+
+    monkeypatch.setattr(drain_module, "drain_once", lambda **kw: 0)
+    drain_module.main(["--lane", "initial"])
+    assert logging.getLogger("httpx").level == logging.WARNING
+    assert logging.getLogger("httpcore").level == logging.WARNING

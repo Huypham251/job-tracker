@@ -1,3 +1,4 @@
+import logging
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -676,8 +677,8 @@ def test_run_forever_reaps_stale_jobs_every_iteration(monkeypatch) -> None:
     reap_calls = []
     claim_calls = []
 
-    monkeypatch.setattr(worker_module, "reap_stale_jobs", lambda db: reap_calls.append(db))
-    monkeypatch.setattr(worker_module, "claim_next_job", lambda db: claim_calls.append(db) or None)
+    monkeypatch.setattr(worker_module, "reap_stale_jobs", lambda db, job_type=None: reap_calls.append(db))
+    monkeypatch.setattr(worker_module, "claim_next_job", lambda db, job_type=None: claim_calls.append(db) or None)
     monkeypatch.setattr(worker_module, "SessionLocal", _StubSession)
 
     class _StopLoop(Exception):
@@ -705,11 +706,11 @@ def test_run_forever_reap_failure_does_not_block_claim_next_job(monkeypatch) -> 
 
     claim_calls = []
 
-    def fake_reap(db):
+    def fake_reap(db, job_type=None):
         raise RuntimeError("db blip")
 
     monkeypatch.setattr(worker_module, "reap_stale_jobs", fake_reap)
-    monkeypatch.setattr(worker_module, "claim_next_job", lambda db: claim_calls.append(db) or None)
+    monkeypatch.setattr(worker_module, "claim_next_job", lambda db, job_type=None: claim_calls.append(db) or None)
     monkeypatch.setattr(worker_module, "SessionLocal", _StubSession)
 
     class _StopLoop(Exception):
@@ -854,3 +855,248 @@ def test_drain_once_stops_at_its_time_budget_leaving_jobs_queued(engine, monkeyp
         with engine.begin() as cleanup_conn:
             cleanup_conn.execute(SyncJob.__table__.delete().where(SyncJob.__table__.c.id == job_id))
             cleanup_conn.execute(User.__table__.delete().where(User.__table__.c.id == user_id))
+
+
+def test_claim_next_job_filters_by_lane(db_session, user, other_user) -> None:
+    initial = _make_job(user.id, job_type="initial")
+    incremental = _make_job(other_user.id, job_type="incremental")
+    db_session.add_all([initial, incremental])
+    db_session.commit()
+
+    claimed = claim_next_job(db_session, job_type="incremental")
+
+    assert claimed.id == incremental.id
+    db_session.refresh(initial)
+    assert initial.status == "queued"
+
+
+def test_reap_stale_jobs_only_reaps_its_own_lane(db_session, user, other_user) -> None:
+    stale_initial = _make_job(user.id, job_type="initial", status="running")
+    stale_incremental = _make_job(other_user.id, job_type="incremental", status="running")
+    db_session.add_all([stale_initial, stale_incremental])
+    db_session.commit()
+    old = datetime.now(timezone.utc) - timedelta(minutes=30)
+    _backdate_updated_at(db_session, stale_initial, old)
+    _backdate_updated_at(db_session, stale_incremental, old)
+
+    reap_stale_jobs(db_session, job_type="incremental")
+
+    db_session.refresh(stale_initial)
+    db_session.refresh(stale_incremental)
+    assert stale_incremental.status == "queued"
+    assert stale_initial.status == "running"
+
+
+def test_two_lanes_claim_concurrently_without_blocking_or_stealing(engine) -> None:
+    # Same committed-rows technique as
+    # test_claim_next_job_skips_a_row_locked_by_another_connection: lane A
+    # holds a row lock on its initial job in one real connection while lane B,
+    # in a second connection, claims its incremental job — B must neither
+    # block on A's lock nor take A's row.
+    with engine.begin() as setup_conn:
+        user_ids = [
+            setup_conn.execute(
+                User.__table__.insert()
+                .values(google_sub=f"lane-sub-{i}", email=f"lane-{i}@example.com", name="Lane")
+                .returning(User.__table__.c.id)
+            ).scalar_one()
+            for i in range(2)
+        ]
+        initial_id = setup_conn.execute(
+            SyncJob.__table__.insert()
+            .values(user_id=user_ids[0], job_type="initial", window_start=date(2026, 1, 1))
+            .returning(SyncJob.__table__.c.id)
+        ).scalar_one()
+        incremental_id = setup_conn.execute(
+            SyncJob.__table__.insert()
+            .values(user_id=user_ids[1], job_type="incremental", window_start=date(2026, 1, 1))
+            .returning(SyncJob.__table__.c.id)
+        ).scalar_one()
+
+    try:
+        conn_a = engine.connect()
+        conn_b = engine.connect()
+        session_a = Session(bind=conn_a)
+        session_b = Session(bind=conn_b)
+        try:
+            txn_a = conn_a.begin()
+            session_a.execute(
+                SyncJob.__table__.select()
+                .where(SyncJob.__table__.c.id == initial_id)
+                .with_for_update()
+            ).one()
+
+            claimed_b = claim_next_job(session_b, job_type="incremental")
+            assert claimed_b is not None and claimed_b.id == incremental_id
+            assert claim_next_job(session_b, job_type="initial") is None
+            txn_a.rollback()
+        finally:
+            session_a.close()
+            session_b.close()
+            conn_a.close()
+            conn_b.close()
+    finally:
+        with engine.begin() as cleanup_conn:
+            cleanup_conn.execute(delete(SyncJob).where(SyncJob.id.in_([initial_id, incremental_id])))
+            cleanup_conn.execute(delete(User).where(User.id.in_(user_ids)))
+
+
+class _FakeClock:
+    """Replaces worker.time in drain_once tests: monotonic() only advances
+    when sleep() is called, so budget arithmetic is deterministic."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def _commit_user_and_job(engine, tag: str, **job_values):
+    with engine.begin() as conn:
+        user_id = conn.execute(
+            User.__table__.insert()
+            .values(google_sub=f"{tag}-sub", email=f"{tag}@example.com", name=tag)
+            .returning(User.__table__.c.id)
+        ).scalar_one()
+        values = dict(user_id=user_id, job_type="initial", window_start=date(2026, 1, 1))
+        values.update(job_values)
+        job_id = conn.execute(
+            SyncJob.__table__.insert().values(**values).returning(SyncJob.__table__.c.id)
+        ).scalar_one()
+    return user_id, job_id
+
+
+def _cleanup_committed(engine, user_ids, job_ids) -> None:
+    with engine.begin() as conn:
+        conn.execute(delete(SyncJob).where(SyncJob.id.in_(job_ids)))
+        conn.execute(delete(User).where(User.id.in_(user_ids)))
+
+
+def _job_statuses(engine, job_ids) -> dict:
+    with engine.connect() as conn:
+        rows = conn.execute(SyncJob.__table__.select().where(SyncJob.__table__.c.id.in_(job_ids)))
+        return {row.id: row.status for row in rows}
+
+
+def test_drain_once_with_a_lane_leaves_other_lane_jobs_queued(engine, monkeypatch) -> None:
+    import app.sync.worker as worker_module
+
+    u1, initial_id = _commit_user_and_job(engine, "lane-drain-a", job_type="initial")
+    u2, incremental_id = _commit_user_and_job(engine, "lane-drain-b", job_type="incremental")
+    try:
+        monkeypatch.setattr(worker_module, "SessionLocal", sessionmaker(bind=engine, future=True))
+
+        assert drain_once(job_type="incremental") == 1
+
+        statuses = _job_statuses(engine, [initial_id, incremental_id])
+        assert statuses[incremental_id] == "failed"  # no Gmail connection -> fast fail
+        assert statuses[initial_id] == "queued"
+    finally:
+        _cleanup_committed(engine, [u1, u2], [initial_id, incremental_id])
+
+
+def test_drain_once_waits_for_a_retry_due_within_its_budget(engine, monkeypatch) -> None:
+    import time as real_time
+
+    import app.sync.worker as worker_module
+
+    due = datetime.now(timezone.utc) + timedelta(seconds=2)
+    user_id, job_id = _commit_user_and_job(engine, "retry-wait", job_type="incremental", next_attempt_at=due)
+    try:
+        monkeypatch.setattr(worker_module, "SessionLocal", sessionmaker(bind=engine, future=True))
+        clock = _FakeClock()
+
+        def sleep_for_real(seconds: float) -> None:
+            # next_attempt_at is compared against real wall-clock time.
+            clock.sleeps.append(seconds)
+            clock.now += seconds
+            real_time.sleep(seconds)
+
+        clock.sleep = sleep_for_real
+        monkeypatch.setattr(worker_module, "time", clock)
+
+        assert drain_once(max_runtime_seconds=60, job_type="incremental") == 1
+        assert len(clock.sleeps) == 1 and 0 < clock.sleeps[0] <= 4
+        assert _job_statuses(engine, [job_id])[job_id] == "failed"
+    finally:
+        _cleanup_committed(engine, [user_id], [job_id])
+
+
+def test_drain_once_does_not_wait_for_a_retry_beyond_its_budget(engine, monkeypatch) -> None:
+    import app.sync.worker as worker_module
+
+    due = datetime.now(timezone.utc) + timedelta(hours=1)
+    user_id, job_id = _commit_user_and_job(engine, "retry-far", job_type="incremental", next_attempt_at=due)
+    try:
+        monkeypatch.setattr(worker_module, "SessionLocal", sessionmaker(bind=engine, future=True))
+        clock = _FakeClock()
+        monkeypatch.setattr(worker_module, "time", clock)
+
+        assert drain_once(max_runtime_seconds=60, job_type="incremental") == 0
+        assert clock.sleeps == []
+        assert _job_statuses(engine, [job_id])[job_id] == "queued"
+    finally:
+        _cleanup_committed(engine, [user_id], [job_id])
+
+
+def test_drain_once_does_not_wait_for_another_lanes_retry(engine, monkeypatch) -> None:
+    import app.sync.worker as worker_module
+
+    due = datetime.now(timezone.utc) + timedelta(seconds=2)
+    user_id, job_id = _commit_user_and_job(engine, "retry-other-lane", job_type="initial", next_attempt_at=due)
+    try:
+        monkeypatch.setattr(worker_module, "SessionLocal", sessionmaker(bind=engine, future=True))
+        clock = _FakeClock()
+        monkeypatch.setattr(worker_module, "time", clock)
+
+        assert drain_once(max_runtime_seconds=60, job_type="incremental") == 0
+        assert clock.sleeps == []
+    finally:
+        _cleanup_committed(engine, [user_id], [job_id])
+
+
+def test_fetch_failure_log_line_does_not_contain_the_raw_message_id(
+    db_session, user, monkeypatch, caplog
+) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["rawid123"], None))
+
+    def failing_fetch(token, mid):
+        raise google_api.GoogleApiError("boom")
+
+    monkeypatch.setattr(google_api, "get_message_summary", failing_fetch)
+    # conftest.py's Alembic run calls logging.config.fileConfig, which disables
+    # every logger that already exists (including this one) — re-enable it so
+    # caplog can see the line this test is about.
+    monkeypatch.setattr(logging.getLogger("app.sync.worker"), "disabled", False)
+
+    with caplog.at_level("WARNING"):
+        process_job(db_session, job, extractor=_FakeExtractor({}))
+
+    assert "rawid123" not in caplog.text
+    assert "msg-" in caplog.text
+
+
+def test_drain_once_exits_instead_of_spinning_when_a_due_job_is_locked_elsewhere(monkeypatch) -> None:
+    # A due job that claim_next_job can't take (row-locked by another worker)
+    # yields wait == 0; the drain must exit, not sleep-and-retry until its
+    # budget runs out.
+    import app.sync.worker as worker_module
+
+    monkeypatch.setattr(worker_module, "SessionLocal", _StubSession)
+    monkeypatch.setattr(worker_module, "_run_one_tick", lambda db, job_type=None: None)
+    monkeypatch.setattr(worker_module, "_seconds_until_next_retry", lambda db, job_type: 0.0)
+    clock = _FakeClock()
+    monkeypatch.setattr(worker_module, "time", clock)
+
+    assert drain_once(max_runtime_seconds=60, job_type="incremental") == 0
+    assert clock.sleeps == []

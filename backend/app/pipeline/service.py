@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.applications.models import Application, ApplicationStatus
 from app.core.config import settings
+from app.core.privacy import message_ref
 from app.classifier.extractor import ClassificationError, Extractor
 from app.classifier.schemas import EmailExtraction
 from app.pipeline import matching
@@ -34,7 +35,7 @@ def process_message(
             subject=summary["subject"], sender=summary["from_"], date=summary["date"], body=body
         )
     except ClassificationError:
-        logger.warning("Skipping message %s: extraction failed", message_id)
+        logger.warning("Skipping message %s: extraction failed", message_ref(message_id))
         return None
 
     review_status, matched_application_id, proposed_action = _apply_decision(
@@ -65,7 +66,7 @@ def process_message(
         db.commit()
     except SQLAlchemyError:
         db.rollback()
-        logger.warning("Skipping message %s: failed to persist", message_id)
+        logger.warning("Skipping message %s: failed to persist", message_ref(message_id))
         return None
 
     return review_status
