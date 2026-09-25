@@ -20,12 +20,50 @@ _WHITESPACE_RE = re.compile(r"\s+")
 
 
 class GoogleApiError(Exception):
-    """A Google/Gmail HTTP call returned a non-2xx response."""
+    """A Google/Gmail call failed: a non-2xx response (status_code set) or a
+    network-level failure (status_code None). The message carries only the
+    operation and the status or error class — never a URL, token or message
+    ID, since worker tracebacks end up in public GitHub Actions logs."""
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class GmailAuthError(GoogleApiError):
+    """The user's Gmail grant is no longer usable (revoked, expired, or the
+    stored token is unreadable) — retrying can't help, only a reconnect can."""
+
+
+def _send(method: str, url: str, operation: str, **kwargs) -> httpx.Response:
+    try:
+        return getattr(httpx, method)(url, **kwargs)
+    except httpx.TransportError as exc:
+        raise GoogleApiError(f"{operation} failed: network error ({type(exc).__name__})") from exc
+
+
+def _raise_for_status(response: httpx.Response, operation: str) -> None:
+    if response.status_code == 200:
+        return
+    if response.status_code == 401:
+        # The access token was just refreshed or is still within its
+        # lifetime, so a 401 from Gmail means the grant itself is gone.
+        raise GmailAuthError(f"{operation} failed: 401", status_code=401)
+    raise GoogleApiError(f"{operation} failed: {response.status_code}", status_code=response.status_code)
+
+
+def _oauth_error(response: httpx.Response) -> str | None:
+    try:
+        return response.json().get("error")
+    except Exception:
+        return None
 
 
 def refresh_access_token(*, client_id: str, client_secret: str, refresh_token: str) -> dict:
-    response = httpx.post(
+    response = _send(
+        "post",
         TOKEN_URL,
+        "token refresh",
         data={
             "client_id": client_id,
             "client_secret": client_secret,
@@ -35,36 +73,43 @@ def refresh_access_token(*, client_id: str, client_secret: str, refresh_token: s
         timeout=_TIMEOUT,
     )
     if response.status_code != 200:
-        raise GoogleApiError(f"token refresh failed: {response.status_code}")
+        # invalid_grant = the refresh token was revoked or expired (weekly in
+        # Google's Testing mode). invalid_client and friends are our own
+        # misconfiguration, not the user's grant, so they stay generic —
+        # which is also why this doesn't go through _raise_for_status.
+        if response.status_code == 400 and _oauth_error(response) == "invalid_grant":
+            raise GmailAuthError("token refresh failed: invalid_grant", status_code=400)
+        raise GoogleApiError(f"token refresh failed: {response.status_code}", status_code=response.status_code)
     return response.json()
 
 
 def revoke_token(token: str) -> None:
-    response = httpx.post(REVOKE_URL, data={"token": token}, timeout=_TIMEOUT)
-    if response.status_code != 200:
-        raise GoogleApiError(f"token revoke failed: {response.status_code}")
+    response = _send("post", REVOKE_URL, "token revoke", data={"token": token}, timeout=_TIMEOUT)
+    _raise_for_status(response, "token revoke")
 
 
 def get_profile(access_token: str) -> dict:
-    response = httpx.get(
+    response = _send(
+        "get",
         f"{GMAIL_API_BASE}/profile",
+        "profile fetch",
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=_TIMEOUT,
     )
-    if response.status_code != 200:
-        raise GoogleApiError(f"profile fetch failed: {response.status_code}")
+    _raise_for_status(response, "profile fetch")
     return response.json()
 
 
 def list_message_ids(access_token: str, *, limit: int) -> list[str]:
-    response = httpx.get(
+    response = _send(
+        "get",
         f"{GMAIL_API_BASE}/messages",
+        "message list",
         headers={"Authorization": f"Bearer {access_token}"},
         params={"maxResults": limit},
         timeout=_TIMEOUT,
     )
-    if response.status_code != 200:
-        raise GoogleApiError(f"message list failed: {response.status_code}")
+    _raise_for_status(response, "message list")
     return [item["id"] for item in response.json().get("messages", [])]
 
 
@@ -75,14 +120,15 @@ def list_message_ids_page(
     if page_token is not None:
         params["pageToken"] = page_token
 
-    response = httpx.get(
+    response = _send(
+        "get",
         f"{GMAIL_API_BASE}/messages",
+        "message list",
         headers={"Authorization": f"Bearer {access_token}"},
         params=params,
         timeout=_TIMEOUT,
     )
-    if response.status_code != 200:
-        raise GoogleApiError(f"message list failed: {response.status_code}")
+    _raise_for_status(response, "message list")
     payload = response.json()
     ids = [item["id"] for item in payload.get("messages", [])]
     return ids, payload.get("nextPageToken")
@@ -100,8 +146,10 @@ def _summary_from_payload(payload: dict, message_id: str) -> dict:
 
 
 def get_message_summary(access_token: str, message_id: str) -> dict:
-    response = httpx.get(
+    response = _send(
+        "get",
         f"{GMAIL_API_BASE}/messages/{message_id}",
+        "message fetch",
         headers={"Authorization": f"Bearer {access_token}"},
         # format=metadata + an explicit header allowlist — used only by the
         # Phase 3 display endpoint ("Fetch recent messages"), which never
@@ -112,8 +160,7 @@ def get_message_summary(access_token: str, message_id: str) -> dict:
         },
         timeout=_TIMEOUT,
     )
-    if response.status_code != 200:
-        raise GoogleApiError(f"message fetch failed: {response.status_code}")
+    _raise_for_status(response, "message fetch")
     return _summary_from_payload(response.json(), message_id)
 
 
@@ -174,13 +221,14 @@ def get_message(access_token: str, message_id: str) -> tuple[dict, str]:
     minimized: cleaned plain text only, truncated, never the raw MIME
     structure or attachments, and the body itself is never persisted
     (Phase 4 spec §11)."""
-    response = httpx.get(
+    response = _send(
+        "get",
         f"{GMAIL_API_BASE}/messages/{message_id}",
+        "message fetch",
         headers={"Authorization": f"Bearer {access_token}"},
         params={"format": "full"},
         timeout=_TIMEOUT,
     )
-    if response.status_code != 200:
-        raise GoogleApiError(f"message fetch failed: {response.status_code}")
+    _raise_for_status(response, "message fetch")
     payload = response.json()
     return _summary_from_payload(payload, message_id), _body_from_payload(payload)

@@ -6,7 +6,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
@@ -14,6 +14,7 @@ from app.auth.dependencies import COOKIE_NAME
 from app.auth.jwt import create_access_token
 from app.core.config import settings
 from app.db.base import Base
+from app.db.session import build_engine
 from app.main import app
 from app.users.models import User
 
@@ -53,7 +54,9 @@ def _alembic_config(url: str) -> Config:
 @pytest.fixture(scope="session")
 def engine():
     _ensure_test_database()
-    eng = create_engine(TEST_DATABASE_URL, future=True)
+    # build_engine, not a bare create_engine, so tests see the same
+    # hide_parameters/pool_pre_ping behavior production does.
+    eng = build_engine(TEST_DATABASE_URL)
     # Guarantee a clean slate regardless of what a previous run left behind,
     # then run the REAL migrations (not Base.metadata.create_all) so
     # migration/model drift is caught by the test suite, not just by eye.

@@ -329,7 +329,7 @@ def test_process_job_fails_a_message_on_fetch_error_without_failing_the_job(
     monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["m1"], None))
     monkeypatch.setattr(
         google_api, "get_message",
-        lambda token, mid: (_ for _ in ()).throw(google_api.GoogleApiError("boom")),
+        lambda token, mid: (_ for _ in ()).throw(google_api.GoogleApiError("boom", status_code=404)),
     )
     extractor = _FakeExtractor({})
 
@@ -1067,7 +1067,7 @@ def test_fetch_failure_log_line_does_not_contain_the_raw_message_id(
     monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["rawid123"], None))
 
     def failing_fetch(token, mid):
-        raise google_api.GoogleApiError("boom")
+        raise google_api.GoogleApiError("boom", status_code=404)
 
     monkeypatch.setattr(google_api, "get_message", failing_fetch)
     # conftest.py's Alembic run calls logging.config.fileConfig, which disables
@@ -1096,3 +1096,135 @@ def test_drain_once_exits_instead_of_spinning_when_a_due_job_is_locked_elsewhere
 
     assert drain_once(max_runtime_seconds=60, job_type="incremental") == 0
     assert clock.sleeps == []
+
+
+def _no_sleep(monkeypatch) -> list[float]:
+    import app.sync.worker as worker_module
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(worker_module.time, "sleep", sleeps.append)
+    return sleeps
+
+
+@pytest.mark.parametrize("status_code", [None, 429, 503])
+def test_process_job_retries_a_transiently_failed_message_once(
+    db_session, user, monkeypatch, status_code
+) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+    sleeps = _no_sleep(monkeypatch)
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["m1"], None))
+    calls = []
+
+    def flaky(token, mid):
+        calls.append(mid)
+        if len(calls) == 1:
+            raise google_api.GoogleApiError("blip", status_code=status_code)
+        return _make_summary(mid, "Subject m1"), "body"
+
+    monkeypatch.setattr(google_api, "get_message", flaky)
+    extractor = _FakeExtractor({"Subject m1": EmailExtraction(is_job_related=False, confidence=0.99)})
+
+    process_job(db_session, job, extractor)
+
+    db_session.refresh(job)
+    assert calls == ["m1", "m1"]
+    assert sleeps == [2.0]
+    assert job.status == "completed"
+    assert job.attempts == 0
+    assert job.failed_count == 0
+    assert db_session.query(ProcessedMessage).filter_by(gmail_message_id="m1").count() == 1
+
+
+def test_process_job_skips_a_message_after_two_transient_failures_without_using_an_attempt(
+    db_session, user, monkeypatch
+) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+    _no_sleep(monkeypatch)
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["m1"], None))
+    monkeypatch.setattr(
+        google_api, "get_message",
+        lambda token, mid: (_ for _ in ()).throw(google_api.GoogleApiError("down", status_code=None)),
+    )
+
+    process_job(db_session, job, _FakeExtractor({}))
+
+    db_session.refresh(job)
+    assert job.status == "completed"
+    assert job.attempts == 0
+    assert job.failed_count == 1
+
+
+def test_process_job_does_not_retry_a_non_transient_message_error(db_session, user, monkeypatch) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+    sleeps = _no_sleep(monkeypatch)
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["m1"], None))
+    calls = []
+
+    def gone(token, mid):
+        calls.append(mid)
+        raise google_api.GoogleApiError("gone", status_code=404)
+
+    monkeypatch.setattr(google_api, "get_message", gone)
+
+    process_job(db_session, job, _FakeExtractor({}))
+
+    assert calls == ["m1"]
+    assert sleeps == []
+
+
+def test_fetch_failure_log_line_includes_the_status_but_not_the_raw_id(
+    db_session, user, monkeypatch, caplog
+) -> None:
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+    _no_sleep(monkeypatch)
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["rawid456"], None))
+    monkeypatch.setattr(
+        google_api, "get_message",
+        lambda token, mid: (_ for _ in ()).throw(google_api.GoogleApiError("x", status_code=503)),
+    )
+    monkeypatch.setattr(logging.getLogger("app.sync.worker"), "disabled", False)
+
+    with caplog.at_level("WARNING"):
+        process_job(db_session, job, extractor=_FakeExtractor({}))
+
+    assert "HTTP 503" in caplog.text
+    assert "rawid456" not in caplog.text
+
+
+def test_a_db_error_in_the_precheck_query_does_not_log_raw_message_ids(
+    db_session, user, monkeypatch, caplog
+) -> None:
+    # A real Postgres error raised from the actual pre-check query, which binds
+    # the page's raw Gmail message IDs — its traceback goes to public logs.
+    _connect_gmail(db_session, user)
+    job = _make_job(user.id)
+    db_session.add(job)
+    db_session.commit()
+    monkeypatch.setattr(google_api, "list_message_ids_page", lambda token, **kw: (["rawid789"], None))
+    real_scalars = db_session.scalars
+
+    def poisoned(statement, *args, **kwargs):
+        if "processed_messages" in str(statement):
+            statement = statement.where(text("1/0 = 1"))
+        return real_scalars(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "scalars", poisoned)
+    monkeypatch.setattr(logging.getLogger("app.sync.worker"), "disabled", False)
+
+    with caplog.at_level("ERROR"):
+        process_job(db_session, job, extractor=_FakeExtractor({}))
+
+    assert "division by zero" in caplog.text  # the failure really happened and was logged
+    assert "rawid789" not in caplog.text

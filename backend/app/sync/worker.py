@@ -30,6 +30,8 @@ POLL_INTERVAL_SECONDS = 2.0
 PAGE_SIZE = 100
 BASE_BACKOFF_SECONDS = 30
 MAX_BACKOFF_SECONDS = 3600
+# One in-place retry for a single message's transient fetch failure (Phase 10).
+PER_MESSAGE_RETRY_SECONDS = 2.0
 
 _last_poll_at: datetime | None = None
 
@@ -73,6 +75,27 @@ def _requeue_or_fail(job: SyncJob, error_message: str) -> None:
         job.status = "failed"
         job.error_message = error_message
         job.finished_at = datetime.now(timezone.utc)
+
+
+def _is_transient(exc: GoogleApiError) -> bool:
+    return exc.status_code is None or exc.status_code == 429 or exc.status_code >= 500
+
+
+def _describe_failure(exc: GoogleApiError) -> str:
+    return "network error" if exc.status_code is None else f"HTTP {exc.status_code}"
+
+
+def _fetch_message(access_token: str, message_id: str) -> tuple[dict, str]:
+    """get_message with one in-place retry for a transient failure (429, 5xx,
+    network). A message skipped here is never written to ProcessedMessage, so
+    if it's older than the next incremental window it's never seen again."""
+    try:
+        return google_api.get_message(access_token, message_id)
+    except GoogleApiError as exc:
+        if not _is_transient(exc):
+            raise
+        time.sleep(PER_MESSAGE_RETRY_SECONDS)
+        return google_api.get_message(access_token, message_id)
 
 
 def _safe_error_message(exc: Exception) -> str:
@@ -169,9 +192,11 @@ def process_job(db: Session, job: SyncJob, extractor: Extractor | None = None) -
                     continue
 
                 try:
-                    summary, body = google_api.get_message(access_token, message_id)
-                except GoogleApiError:
-                    logger.warning("Skipping message %s: fetch failed", message_ref(message_id))
+                    summary, body = _fetch_message(access_token, message_id)
+                except GoogleApiError as exc:
+                    logger.warning(
+                        "Skipping message %s: fetch failed (%s)", message_ref(message_id), _describe_failure(exc)
+                    )
                     job.failed_count += 1
                     job.messages_processed += 1
                     db.commit()

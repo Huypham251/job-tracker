@@ -266,3 +266,63 @@ def test_get_message_uses_the_requested_id_when_the_payload_has_none(monkeypatch
     assert summary["id"] == "m9"
     assert summary["subject"] == "" and summary["snippet"] == ""
     assert body == ""
+
+
+def test_non_200_errors_carry_the_status_code(monkeypatch) -> None:
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(503, {}))
+    with pytest.raises(google_api.GoogleApiError) as exc_info:
+        google_api.list_message_ids_page("t", query="q", page_token=None, max_results=1)
+    assert exc_info.value.status_code == 503
+    assert not isinstance(exc_info.value, google_api.GmailAuthError)
+
+
+def test_refresh_access_token_raises_auth_error_on_invalid_grant(monkeypatch) -> None:
+    monkeypatch.setattr(
+        httpx, "post", lambda *a, **k: _FakeResponse(400, {"error": "invalid_grant"})
+    )
+    with pytest.raises(google_api.GmailAuthError) as exc_info:
+        google_api.refresh_access_token(client_id="c", client_secret="s", refresh_token="r")
+    assert exc_info.value.status_code == 400
+
+
+def test_refresh_access_token_invalid_client_is_not_an_auth_error(monkeypatch) -> None:
+    # A wrong client secret is an operator problem, not the user's grant.
+    monkeypatch.setattr(
+        httpx, "post", lambda *a, **k: _FakeResponse(401, {"error": "invalid_client"})
+    )
+    with pytest.raises(google_api.GoogleApiError) as exc_info:
+        google_api.refresh_access_token(client_id="c", client_secret="s", refresh_token="r")
+    assert not isinstance(exc_info.value, google_api.GmailAuthError)
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: google_api.list_message_ids_page("t", query="q", page_token=None, max_results=1),
+        lambda: google_api.get_message("t", "m1"),
+        lambda: google_api.get_profile("t"),
+    ],
+)
+def test_gmail_api_401_raises_auth_error(monkeypatch, call) -> None:
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(401, {}))
+    with pytest.raises(google_api.GmailAuthError):
+        call()
+
+
+@pytest.mark.parametrize("exc_type", [httpx.ReadTimeout, httpx.ConnectError])
+def test_network_errors_become_google_api_errors_without_a_status(monkeypatch, exc_type) -> None:
+    def boom(*a, **k):
+        raise exc_type("network down")
+
+    monkeypatch.setattr(httpx, "get", boom)
+    monkeypatch.setattr(httpx, "post", boom)
+    for call in (
+        lambda: google_api.get_message("t", "m1"),
+        lambda: google_api.list_message_ids_page("t", query="q", page_token=None, max_results=1),
+        lambda: google_api.refresh_access_token(client_id="c", client_secret="s", refresh_token="r"),
+    ):
+        with pytest.raises(google_api.GoogleApiError) as exc_info:
+            call()
+        assert exc_info.value.status_code is None
+        assert "gmail.googleapis.com" not in str(exc_info.value)
