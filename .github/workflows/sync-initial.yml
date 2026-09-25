@@ -1,24 +1,28 @@
-name: Sync Worker
+name: Sync Worker (initial)
 
+# Started on demand by the API (workflow_dispatch) as soon as a initial sync job
+# is queued; the schedule is only a fallback for failed or missing dispatches.
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch: {}
+  schedule:
+    - cron: "*/15 * * * *"
 
-# One drain at a time — production has only ever been verified with a single
-# worker. Never cancel-in-progress: killing a drain mid-job leaves that job
-# "running" until a later run's reaper requeues it, costing it an attempt.
+permissions:
+  contents: read
+
+# One drain per lane at a time. Never cancel-in-progress: killing a drain
+# mid-job leaves that job "running" until a later run's reaper requeues it,
+# costing it an attempt.
 concurrency:
-  group: sync-worker
+  group: sync-initial
   cancel-in-progress: false
 
 jobs:
   drain:
     runs-on: ubuntu-latest
-    # drain_once's 240s budget is only checked between jobs; one job (e.g. a
-    # 180-day initial backfill, ~0.7s/message in prod) can run over an hour.
-    # 120 leaves headroom for that while still cutting off a genuinely hung
-    # run well before GitHub's 360-minute default.
+    # A 180-day initial import of a ~6,500-message mailbox took ~75 min at the
+    # Phase 8 rate; the drain's own 100-minute budget exits cleanly first. A
+    # single job still can't be paused mid-way (time-slicing is deferred).
     timeout-minutes: 120
     env:
       DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
@@ -45,4 +49,4 @@ jobs:
 
       - name: Drain sync queue
         working-directory: backend
-        run: uv run python -m app.sync.drain
+        run: uv run python -m app.sync.drain --lane initial
