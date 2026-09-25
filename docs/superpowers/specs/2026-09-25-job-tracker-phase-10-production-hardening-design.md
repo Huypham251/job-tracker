@@ -5,7 +5,7 @@
 including rate limiting); 25-minute initial slice, configurable; GitHub failed-run email
 as the only alert channel; a Google consent-screen investigation that stops for approval
 before any Google Cloud change; static-site security headers in CP5 with a conservative
-CSP.
+CSP. **CP0 decided 2026-09-25: option (a), stay in Testing; CP7 dropped** (§11.5).
 **Scope:** Make the deployed app fail clearly, recover on its own, and tell the
 maintainer when it can't, **without new infrastructure or hosting cost**. The
 architecture stays as it is: Render Static Site + Render free Web Service + Neon + GitHub
@@ -612,3 +612,30 @@ If (b) is chosen instead, CP7 grows to: the app allowlist → privacy-policy and
 pages on the static site → Branding links filled in → (if the console demands it) Search
 Console verification of `job-tracker-1-ldy2.onrender.com` → **stop for approval** →
 Publish → one reconnect → a sync after 8 or more days succeeds without reauthorization.
+
+### 11.5 Decision (2026-09-25)
+
+**Option (a): stay in Google OAuth Testing mode for Phase 10.** Publishing,
+privacy/terms pages, domain verification and full verification are out of scope.
+CP2's reconnect handling and CP4's failure alert stay as planned.
+
+**CP7 is dropped.** Its only content was the `AUTH_ALLOWED_EMAILS` sign-in allowlist.
+In Testing mode Google already refuses sign-in to anyone who isn't a listed test user,
+before our callback runs, so the allowlist would add only defense-in-depth against a
+future configuration change. Criterion G2 no longer applies; G1 is met by this section.
+
+**Future improvement: publish the OAuth app (unverified, personal use).** Requirements
+found in CP0, in order:
+1. An app-side sign-in allowlist (`AUTH_ALLOWED_EMAILS`, as designed for the former
+   CP7), deployed and verified first. Publishing removes Google's test-user gate.
+2. A home page, a privacy policy and terms of service, hosted on the app's own domain
+   (`job-tracker-1-ldy2.onrender.com`; `onrender.com` is on the Public Suffix List). The
+   privacy policy on the home page and on the consent screen must be the same.
+3. The Branding page's home page, privacy policy and terms links filled in (this
+   un-disables "Publish app").
+4. If the console requires it: verify `job-tracker-1-ldy2.onrender.com` in Google Search
+   Console.
+5. Publish; reconnect Gmail once (Testing-issued tokens may keep their 7-day expiry);
+   confirm that a sync 8 or more days later succeeds without reauthorization.
+6. Stay under the 100-user lifetime cap; users will see the "unverified app" screen.
+   Anything beyond personal use means full verification plus an annual CASA assessment.

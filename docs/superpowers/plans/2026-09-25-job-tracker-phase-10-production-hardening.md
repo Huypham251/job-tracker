@@ -21,7 +21,7 @@
 - Initial slice default `1500` s, incremental `1200` s, orphan threshold `120` s — all env-overridable settings.
 - Reauth HTTP response: **403** `{"detail": ..., "code": "gmail_reauth_required"}`; 409 stays reserved for "already running" with a `SyncJob` body.
 - Rate limits: `POST /gmail/sync` 10/60s per user; `GET /gmail/messages` 5/60s per user; `GET /gmail/connect` 5/60s per user; `GET /auth/google/login` 20/60s per client IP. Dispatch re-kick ≤ 1 per job per 30s.
-- No Google Cloud change without explicit approval (CP7). Render dashboard changes only in CP5 (headers) and CP7, guided step by step.
+- No Google Cloud changes in Phase 10 (CP0 chose option (a); CP7 dropped). Render dashboard changes only in CP5 (headers), guided step by step.
 - Every checkpoint: full local checks (`cd backend && uv run pytest && uv run python -m evaluation.compare`; `cd frontend && npx tsc -b && npx oxlint && npm run build`) → commit → push to `main` → CI green → production verification.
 
 ## Review Focus
@@ -1256,7 +1256,11 @@ def test_every_workflow_action_is_pinned_to_a_full_commit_sha() -> None:
 
 ---
 
-## CP7 — (Conditional on CP0 option (b)) App allowlist, then consent-screen switch
+## CP7 — DROPPED 2026-09-25 (CP0 chose option (a); see spec §11.5)
+
+> Kept below for reference only; do not execute. Recorded as a future improvement in the spec.
+
+### (former) App allowlist, then consent-screen switch
 
 ### Task 7.1: `AUTH_ALLOWED_EMAILS`
 
