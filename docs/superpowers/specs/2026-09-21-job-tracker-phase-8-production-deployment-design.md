@@ -1,5 +1,16 @@
 # Job Application Tracker — Phase 8 Design: Production Deployment & CI/CD
 
+> **Partly superseded during deployment (2026-09-22 → 2026-09-24).** §3.3's in-process
+> worker (`RUN_WORKER_IN_PROCESS=true`) was abandoned after two real Render free-tier
+> OOM restarts. The worker now runs as a scheduled GitHub Actions workflow
+> (`.github/workflows/sync-worker.yml` → `python -m app.sync.drain`), and
+> `RUN_WORKER_IN_PROCESS` is `false` in production. So §3.1's topology diagram, §4's
+> env-var list, §12's `/health/worker` checks and §14's "Backend + worker" row describe
+> the original plan, not what's running. OAuth redirect URIs use the **frontend**
+> domain, not the backend's (`50dba5b`). §6 was corrected in place. For the current
+> architecture, see CLAUDE.md's "Phase 8 results" and README's "Production
+> deployment".
+
 **Date:** 2026-09-21
 **Status:** Draft — awaiting approval
 **Scope:** Takes the application from "runs on localhost only" to a genuinely deployed,

@@ -6,11 +6,15 @@ a spec — the specs under `docs/superpowers/specs/` and plans under
 
 ## Status
 
-Phases 1–7 are complete and merged to `main`. Phase 5 was manually verified end-to-end
+Phases 1–8 are complete and merged to `main`, and the app is **deployed to production**
+(Render + Neon + GitHub Actions, $0/month — see "Phase 8 results" below; production
+path verified end-to-end 2026-09-24). Phase 5 was manually verified end-to-end
 against a real Gmail account (2026-09-17) — see "Manual testing findings" below — and
 Phase 6 was manually verified the same way (2026-09-20) — see "Phase 6 manual testing
-findings" below. Backend: 281/281 tests passing (279 plus two regression tests added
-during Phase 7's final whole-branch review — see "Phase 7 results" below). Frontend:
+findings" below. Backend: 301/301 tests passing (281 after Phase 7, plus Phase 8's
+health/heartbeat, in-process-worker, drain-entrypoint, workflow-config and
+key-rotation reconnect/disconnect tests).
+Frontend:
 `tsc -b` clean, `oxlint` clean (0 errors, 3 pre-existing warnings in
 `AuthContext.tsx`/`useApplications.ts`, unrelated to any phase and not touched by any of
 them). Working tree clean, no uncommitted changes.
@@ -41,13 +45,22 @@ them). Working tree clean, no uncommitted changes.
   false positives), plus three new evaluation-dataset examples covering the gaps. A
   final whole-branch review then found and fixed two further issues the per-task
   reviews had missed — see "Phase 7 results" below.
+- Phase 8: production deployment + CI/CD — Render Static Site (frontend) + Render free
+  Web Service (API) + Neon Postgres, a GitHub Actions CI gate on `main`, and the sync
+  worker running as a **scheduled GitHub Actions workflow** (not in-process, not a
+  Render service — see "Phase 8 results" for why the spec's original in-process design
+  was abandoned). Six real bugs/constraints found only during live deployment were
+  fixed along the way.
 
 **Read `2026-09-15-job-tracker-phase-4-pipeline-design.md` for the pipeline architecture
 that's still current (matching, trust model, DB schema, `/pipeline/review*` API,
 frontend), `2026-09-15-job-tracker-phase-4b-local-classifier-design.md` for how
 classification actually works, and `2026-09-16-job-tracker-phase-5-gmail-sync-design.md`
 for the sync job queue/worker.** All three specs carry supersession banners pointing at
-whichever of the others changed their original decisions.
+whichever of the others changed their original decisions. For production,
+`2026-09-21-job-tracker-phase-8-production-deployment-design.md` covers hosting,
+secrets, OAuth and CI — but its §3.3 in-process worker design was superseded during
+deployment (banner at its top); "Phase 8 results" below is the current truth.
 
 ## Architecture
 
@@ -83,11 +96,30 @@ backend/app/
 │   │                            on an already-active job), get_job, get_latest_job
 │   ├── router.py               /api/v1/gmail/sync* (POST /sync, GET /sync/{id},
 │   │                            GET /sync/latest)
-│   └── worker.py                 claim_next_job (FOR UPDATE SKIP LOCKED),
-│                                   process_job (pagination + retry/backoff),
-│                                   reap_stale_jobs, run_forever — run as a SEPARATE
-│                                   process: `uv run python -m app.sync.worker`
-└── core/config.py    Settings — gmail_sync_backfill_days, sync_stale_job_threshold_minutes
+│   ├── worker.py                 claim_next_job (FOR UPDATE SKIP LOCKED),
+│   │                               process_job (pagination + retry/backoff),
+│   │                               reap_stale_jobs, _run_one_tick (shared
+│   │                               reap+claim+process), run_forever (local dev:
+│   │                               `uv run python -m app.sync.worker`), drain_once
+│   │                               (Phase 8: drain until empty or 240s budget)
+│   ├── drain.py                    Phase 8 — production entrypoint,
+│   │                               `python -m app.sync.drain`, run by the scheduled
+│   │                               GitHub Actions workflow
+│   └── inprocess.py                Phase 8 — optional worker thread inside the API
+│                                   (RUN_WORKER_IN_PROCESS); OFF in production, see
+│                                   "Phase 8 results"
+├── main.py           /health (liveness), /health/ready (DB ping), /health/worker
+│                     (in-process heartbeat — always 503 in production, by design now)
+├── db/session.py     engine with pool_pre_ping=True (Phase 8, for Neon)
+└── core/config.py    Settings — gmail_sync_backfill_days, sync_stale_job_threshold_minutes,
+                      run_worker_in_process
+
+.github/workflows/
+├── ci.yml            Phase 8 — backend pytest + evaluation.compare; frontend tsc/oxlint/
+│                     build. Required checks ("backend", "frontend") on `main`
+└── sync-worker.yml   Phase 8 — production sync worker: cron */5 + workflow_dispatch,
+                      concurrency group "sync-worker" (never cancel-in-progress),
+                      timeout-minutes 120, PROD_* repo secrets
 
 frontend/src/
 ├── components/ApplicationsPage.tsx   dashboard shell: Gmail panel, SyncPanel,
@@ -209,7 +241,10 @@ sourced (paginated, bounded, resumable instead of a flat top-20 fetch).
   `FOR UPDATE SKIP LOCKED` and are believed safe with more than one worker process, but
   only one worker process has ever actually been run against this code. If a second
   worker is introduced, re-verify the reasoning in the Phase 5 spec's §2 concurrency
-  discussion before trusting it.
+  discussion before trusting it. **Production is deliberately kept single-worker**:
+  `sync-worker.yml`'s `concurrency` group serializes scheduled drains, and
+  `RUN_WORKER_IN_PROCESS` is `false` on Render — turning it on would add a second
+  worker (and reintroduce the OOM problem, see "Phase 8 results").
 - **The old Phase 4 "ReviewQueue only fetches once on mount" staleness gap is fixed.**
   (Noted here only so a search for it in old notes doesn't mislead — `ReviewQueue`'s
   `refreshSignal` prop, bumped by `ApplicationsPage` on sync completion/failure, closes
@@ -552,6 +587,152 @@ reading as though it handled Oracle Fusion HCM tenant subdomains generally (e.g.
 incorrectly and is not fixed by this branch). See the new Known gap below on
 `_SUBDOMAIN_PREFIXES` for a related, wider hazard this same review surfaced but did not
 fix.
+
+## Phase 8 results — production deployment (2026-09-21 → 2026-09-24)
+
+Spec/plan: `docs/superpowers/specs/2026-09-21-job-tracker-phase-8-production-deployment-design.md`
+and `docs/superpowers/plans/2026-09-21-job-tracker-phase-8-production-deployment.md`.
+Deployment/setup steps and secret-rotation procedures live in `README.md`'s
+"Production deployment" section — not duplicated here.
+
+### Production architecture (current, $0/month)
+
+```
+Browser ──> Render Static Site  https://job-tracker-1-ldy2.onrender.com
+              (frontend/dist, CDN, no spin-down)
+              │  rewrite rule: /api/*  ->  https://job-tracker-lds1.onrender.com/api/*
+              v  (browser sees same-origin; no VITE_API_URL, no CORS in the happy path)
+            Render free Web Service  https://job-tracker-lds1.onrender.com
+              (FastAPI/uvicorn; migrations run in the Build Command;
+               RUN_WORKER_IN_PROCESS=false — the API never runs sync jobs)
+              │
+              v
+            Neon Postgres (free, autosuspends)  <──┐
+                                                   │ PROD_DATABASE_URL etc. (repo secrets)
+GitHub Actions ── ci.yml: required checks on main  │
+              └── sync-worker.yml (cron */5, really ~every 3–5h) ──> python -m app.sync.drain
+                                                   └──> Gmail API
+```
+
+Deploy flow: push to `main` → Render auto-deploys both services; `ci.yml` runs on every
+push/PR. `backend`/`frontend` are required checks for PR merges, but as of 2026-09-24
+changes are pushed straight to `main` (maintainer's choice; admins bypass protection),
+so CI no longer gates the deploy — run the full local checks before every push. The scheduled worker always runs `main`'s
+code at the moment it fires, so it picks up merged changes with no deploy step.
+
+### What changed from the spec, discovered only during live deployment
+
+Each was found against real Render/Neon/Google, not locally or in CI:
+
+1. **Render's Pre-Deploy Command is paid-only** (`4cdeed6`) → migrations run as the
+   tail of the Build Command (`uv sync && uv run alembic upgrade head`). A failed
+   migration still aborts the deploy; it just looks like any other build failure.
+2. **OAuth login silently failed behind the rewrite** (`50dba5b`) — Render's rewrite
+   forwards the backend's own Host header, so `request.url_for` built a callback on the
+   backend's domain and the session cookie landed on the wrong origin. `redirect_uri`
+   is now built from `settings.frontend_url`, so Google's callback also goes through
+   the rewrite. **Google Console redirect URIs must therefore be the *frontend*
+   domain** (`https://job-tracker-1-ldy2.onrender.com/api/v1/...`) — the plan's Task 7
+   text (backend domain) predates this fix.
+3. **Neon drops idle connections server-side** (`cbd83be`) → `pool_pre_ping=True`.
+4. **`/health/worker` reported "stale" during a long job** (`861b8f1`) → heartbeat now
+   updates per message, not only per outer loop tick.
+5. **Render free tier OOM-restarted the API while the in-process worker synced**
+   (`1ebafef`) → `process_job` expunges the session identity map every page. A second
+   OOM after that fix, with no memory metrics on the free tier to debug with, led to
+   (`91d1d5d`) moving the worker out of the API entirely: `_run_one_tick` +
+   `drain_once` + `app/sync/drain.py`, originally for a Render Cron Job.
+6. **Render Cron Jobs have no free tier** (`f3d46e5`) → the same entrypoint runs from
+   a scheduled GitHub Actions workflow instead (public repo = free minutes). PR #4
+   later added `concurrency` (one drain at a time, never cancelled mid-job) and
+   `timeout-minutes: 120`, guarded by `tests/test_sync_worker_workflow.py`.
+
+Net effect on the spec: §3.3 (in-process worker) is superseded; `app/sync/inprocess.py`
+and the `RUN_WORKER_IN_PROCESS` setting remain in the code, **off** in production, and
+`/health/worker` therefore always returns `503 not_running` there — expected, not an
+outage. It's only meaningful if the in-process mode is ever deliberately re-enabled.
+
+Also found while preparing the production secret rotation, before rotating anything:
+**reconnect and disconnect returned a 500 after `GMAIL_TOKEN_ENCRYPTION_KEY` was
+rotated.** Both decrypted the old refresh token so they could revoke it, and only
+caught `GoogleApiError`, not `InvalidToken`, so a user could never recover without a
+manual DB delete. Fixed in PR #5: the revoke is best-effort and skipped when the
+stored token is unreadable.
+
+### Production verification (2026-09-24)
+
+- `/health` 200, `/health/ready` 200 (Neon reachable), `/health/worker` 503
+  `not_running` (confirms in-process worker is off). `/api/*` through the frontend
+  rewrite returns 401 unauthenticated (proxied correctly). A foreign `Origin` gets no
+  `Access-Control-Allow-Origin` header (CORS is not a wildcard).
+- **Scheduled worker, end-to-end, no manual trigger**: a Sync clicked in the deployed UI
+  created job `13693c38…` (incremental, `queued`, 21:38:25Z); scheduled run
+  `36062738758` (`event: schedule`) claimed it at 21:38:29Z, paged 122 messages
+  (77 new, 1 queued for review, 74 ignored, 2 per-message fetch failures skipped
+  non-fatally), completed at 21:39:24Z and logged `Drained 1 job(s)`. The pickup was
+  seconds, not hours, only because the click landed just after a scheduled run started.
+- Review queue approve, edit-then-approve and reject; application create, edit and
+  delete — all passed in production, each re-checked after a page reload.
+- Branch protection on `main` requires `backend` and `frontend`; CI green on `main`.
+
+### Production secret rotation (2026-09-24)
+
+All four production secrets were rotated one at a time, after being exposed outside
+git during setup. Git history was scanned first and is clean: no `.env` was ever
+committed, and every committed value is a placeholder. Each new value went from its
+source straight into GitHub (`gh secret set` from stdin) and the clipboard for Render,
+never printed. Each was verified on both sides:
+
+- `SECRET_KEY`: old sessions rejected, sign-in works.
+- `GOOGLE_CLIENT_SECRET`: new secret added alongside the old one; worker token refresh
+  returned 200 with GitHub's copy; sign-in worked after the old secret was disabled;
+  old secret deleted.
+- `DATABASE_URL` (Neon role password reset, pooler host): new URL connected locally
+  before being deployed; `/health/ready` 200; worker connected.
+- `GMAIL_TOKEN_ENCRYPTION_KEY`: Disconnect (the PR #5 fix, now exercised in production),
+  old grant removed at Google, reconnected, worker sync succeeded.
+
+**Found during rotation:** `GmailConnection` holds the sync watermark
+(`last_synced_message_date`), so **any Disconnect resets it**. The first sync after
+reconnecting is a full 180-day `initial` sync. That's harmless thanks to
+`ProcessedMessage` idempotency: the run listed ~6,600 messages across 66 pages,
+fetched only the 36 new ones, and took ~90s. Not changed; documented in README's
+rotation table.
+
+### Free-tier limitations (accepted, not bugs)
+
+- **Sync latency is hours, not minutes.** GitHub treats cron as best-effort and heavily
+  throttles it: `*/5` produced ~11 runs/day (gaps of ~2–5h) over 2026-09-23/24. A
+  queued job waits for the next run; `workflow_dispatch` ("Run workflow") is the
+  on-demand escape hatch.
+- **GitHub disables a public repo's scheduled workflows after 60 days without a
+  commit.** Re-enable from the Actions tab (or push a commit) after a quiet period.
+- **Render Web Service spins down after 15 min idle**; first request takes ~30–60s.
+  The Static Site never sleeps, so the page loads instantly but the first API call
+  is slow.
+- **Neon autosuspends** when idle; first query after a pause is slower
+  (`pool_pre_ping` handles the dropped connections).
+- **512 MB Render instance, no memory metrics** — why the worker lives outside the API.
+- **Google OAuth consent screen is in "Testing" mode**: only listed test users can
+  sign in. Google also expires refresh tokens issued to Testing-mode apps after about
+  7 days, so expect to reconnect Gmail roughly weekly until the app is verified —
+  a sync failing with the generic Gmail error after a quiet week most likely means
+  this (see the `_safe_error_message` gap above).
+
+### Known gaps added by Phase 8 (not fixed)
+
+- **`process_job` has no time budget of its own.** `drain_once`'s 240s budget is
+  checked only between jobs. A job that outlives the 120-minute workflow timeout (or
+  a runner that dies) is left `running`; the *next* scheduled run's reaper requeues
+  it with `attempts += 1`, and three such losses fail it permanently. `page_token` is
+  checkpointed per page, so no work is lost. Proper fix: have `process_job` stop
+  between pages at a deadline and requeue without consuming an attempt.
+- **No monitoring of the scheduled worker** beyond the Actions run history (GitHub
+  emails the repo owner on a failed run). `/health/worker` can't see it.
+- **Branch protection doesn't apply to admins** (`enforce_admins: false`) — `f3d46e5`
+  was pushed straight to `main`. Harmless for a single maintainer; turn it on if that
+  matters.
+- **No rate limiting** on any endpoint, including `POST /gmail/sync` (spec §11).
 
 ## Local dev environment (this machine)
 
