@@ -962,6 +962,15 @@ unchanged (auto_apply_rate 0.419).
   with a clean re-walk. `/docs`, `/redoc`, `/openapi.json` → 404.
 - **Incremental sync still ~1 min or less:** medians 15.6s after CP3, 12.6s after CP5.
 - **Public logs:** no raw message IDs or Gmail message URLs in Phase 10 run logs.
+- **Final review fix in production** (`907d51c`, token checked per Gmail call + one
+  forced refresh on a 401, guarded reauth flag): a Sync click on 2026-09-26 00:00 UTC
+  → run `36203151832` (`workflow_dispatch`, `666692a`) `Drained 1 job(s)` with no
+  warnings, errors or tracebacks, and no message IDs/Gmail URLs in its public log;
+  monitor run `36203374183` green (`completed=25, failed=3` — no new failure). The
+  401 → forced-refresh → retry path itself only fires on a mid-sync expiry or
+  revocation; it's covered by regression tests, not yet observed in production.
+- **Phase 10 closed 2026-09-26.** Open follow-ups: the M-c monitor observation
+  (~2026-10-02) and the deferred minors listed in "Known gaps after Phase 10".
 
 **Known gaps after Phase 10:**
 - **Per-address sign-in limit doesn't work through the frontend rewrite** (verified:
@@ -974,6 +983,16 @@ unchanged (auto_apply_rate 0.419).
   Cosmetic; yields happen at page boundaries, so slicing doesn't cause it.
 - **The success-tail commit is outside `process_job`'s handler** (Phase 5 design): a
   failure there raises; the sweep/reaper recovers the job (cheap — all pages done).
+- **Deferred from the final review (minor):** (1) `claim_next_job` orders by
+  `created_at`, so a sliced job keeps winning its lane and another queued job can wait
+  behind all its slices (and trip a false M1) — fix by ordering on
+  `next_attempt_at, created_at`; (2) a drain that runs out of budget between jobs with
+  due jobs left reports `requeued=false`, so they wait for cron; (3)
+  `actions/checkout` persists the `actions: write` GITHUB_TOKEN where the drain step
+  can read it (`persist-credentials: false` would scope it); (4) a reauth flag is only
+  cleared by a reconnect, never by a later successful Gmail call; (5) the re-kick
+  cooldown map (`sync/router.py::_last_rekick`) never shrinks (negligible); (6) the
+  Sync panel shows the last reauth-failed job's Reconnect hint until the next sync.
 - **7-day monitor observation (M-c) started 2026-09-25** — record false positives and
   Neon compute-hours change around 2026-10-02.
 - **Neon password rotated 2026-09-25** after it was pasted into a Phase 10 session
