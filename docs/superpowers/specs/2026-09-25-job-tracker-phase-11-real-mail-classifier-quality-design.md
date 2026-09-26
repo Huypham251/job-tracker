@@ -196,12 +196,12 @@ production function). New metrics alongside the existing ones (§4). The existin
 synthetic gates and `baseline_metrics.json` are unchanged; a new private
 `real_baseline.json` is frozen at CP0.
 
-### 3.2 Committed pseudonymized subset (CP0)
+### 3.2 Committed pseudonymized subset (CP2)
 
 `python -m evaluation.real.pseudonymize` turns selected **dev-split** examples into
 synthetic-looking records appended to `evaluation/dataset.jsonl` under new
-`real_*` categories (`real_ats_confirmation`, `real_direct_confirmation`,
-`real_assessment`, `real_rejection`, `real_negative`, …):
+`real_*` categories, chosen from the label (`real_applied`, `real_assessment`,
+`real_interview_offer`, `real_rejection`, `real_other`, `real_negative`):
 
 - Each real company is replaced with a consistent fictional name across subject, body,
   sender domain and display name (`<Co>` → "Halvorsen Robotics" / `halvorsen.com`);
@@ -209,15 +209,15 @@ synthetic-looking records appended to `evaluation/dataset.jsonl` under new
   are kept — they are the shape being tested.
 - Recruiter/person names → fictional names; the user's name → a fixed fictional
   candidate name; all §3.1 scrubbing applies.
-- Bodies are the cleaned text (with the CP1 line structure), trimmed to what the
-  classifier needs.
+- Bodies are the cleaned text (with the CP1 line structure). The `Date` header is
+  replaced with a fixed date, so no example reveals when a real application happened.
 - **Gate before commit:** `python -m evaluation.real.check_leaks` scans the committed
   dataset for every string in the private mapping (real company names and domains, the
   user's name/email, recruiter names) and fails on any hit; then the maintainer reviews
   the diff by eye. No real-derived example is committed without both.
 
 Target ~40–60 committed examples. `tests/test_evaluation_accuracy.py` bars are set at
-CP0 from the baseline (the same "tolerates one more miss" rule) and raised as later
+CP2 from the measured numbers (the same "tolerates one more miss" rule) and raised as later
 checkpoints land.
 
 ### 3.3 Ingestion parity (CP1)
@@ -373,14 +373,23 @@ classification quality. The other three gates are unchanged.
 - **Selection:** `review_status = 'pending_review'` only. Nothing else is read for
   rewriting.
 - **Preconditions:** skips (and counts) any user with a `queued`/`running` sync job or
-  `reauth_required_at` set.
+  `reauth_required_at` set, and **re-checks for an active sync job before every row**,
+  stopping that user's run if one appeared. (A sync job row exists the moment Sync is
+  clicked; the worker needs a GitHub runner to boot — 10s or more — before it can write
+  anything, so the per-row check always sees the job first.)
 - **Per row:** re-fetch the message (`google_api.get_message`, with the worker's
   fresh-token handling), classify with the current extractor and the user's
-  `Recipient`, then run the **same** `_apply_decision` (all four gates). Then, in one
-  transaction: `SELECT … FOR UPDATE` the row; if it is **no longer `pending_review`**
-  (the user acted meanwhile), leave it untouched; otherwise snapshot into
-  `previous_classification` and update the classification fields, `review_status`,
+  `Recipient`. Then, in one transaction: `SELECT … FOR UPDATE` the row; if it is **no
+  longer `pending_review`** (the user acted meanwhile), leave it untouched; otherwise
+  lock the user's applications (`FOR UPDATE`, so a concurrent manual edit can't slip
+  between the source check and the write), run the **same** decision function a sync
+  uses (renamed `apply_decision`, all four gates), snapshot the row into
+  `previous_classification` **only if it has no snapshot yet** (a second run keeps the
+  original), and update the classification fields, `review_status`,
   `matched_application_id`, `proposed_action`, `classifier_version`, `reevaluated_at`.
+- **Review actions take the same row lock:** approve/reject (`_get_pending_item`) select
+  the row `FOR UPDATE`, so a click racing a re-evaluation waits for it and then sees the
+  row's new state (a 404 if it left the queue) instead of acting on a stale read.
 - **Outcomes:** a row may stay `pending_review` with better fields, become `ignored`
   (now judged not job-related — leaves the queue), or become `auto_applied` (only
   through the unchanged gates, so never touching a `source="manual"` application and
@@ -393,9 +402,12 @@ classification quality. The other three gates are unchanged.
   in a public GitHub Actions log.
 
 **Where it runs:** `.github/workflows/reevaluate.yml`, `workflow_dispatch` only, input
-`apply` (boolean, default false), `concurrency: sync-incremental` (serializes with
-incremental drains, so no concurrent sync writes applications for the same user),
-SHA-pinned actions, `permissions: contents: read`, same secrets as the lane workflows.
+`apply` (boolean, default false), its **own** `concurrency: reevaluate` group (not the
+incremental lane's: GitHub keeps only one *pending* run per group, so sharing it would
+let a Sync click's dispatch cancel a pending re-evaluation or vice versa — the per-row
+active-sync check above is what keeps it away from syncs), SHA-pinned actions,
+`persist-credentials: false` on checkout, `permissions: contents: read`, same secrets
+as the lane workflows.
 Sequence in production: dry run → maintainer reviews the counts → `apply` run.
 
 ## 4. Metrics
@@ -464,7 +476,7 @@ revision is recorded in §9.
 | CP1 changes every extraction's input | measured on real dev + synthetic before/after; synthetic gates in CI |
 | Labeling effort (~400 examples) | pre-filled labels, review decisions seed them, resumable CLI; mostly "accept" keystrokes |
 | `tldextract` snapshot ages | PSL changes rarely matter here; a test pins that it never goes to the network |
-| Re-evaluation racing a user action or a sync | row lock + state re-check; incremental-lane concurrency group; skip users with active jobs |
+| Re-evaluation racing a user action or a sync | row lock + state re-check (also taken by approve/reject); applications locked per row; active-sync check before every row |
 | Re-evaluation moving good items out of the queue | dry run first; `previous_classification` snapshot allows manual rollback |
 | Weekly Gmail reconnect (Testing consent) blocks export/re-eval | reconnect before running; `GmailAuthError` stops cleanly |
 
@@ -476,13 +488,17 @@ CI green. Maintainer-blocking steps are marked **(M)**.
 
 - **CP0 — Real evaluation set.** Local incremental sync to catch up; `evaluation/real/`
   (export, scrub, label CLI, split, `run_eval --real`); **(M)** labeling; freeze private
-  `real_baseline.json`; pseudonymize + `check_leaks` + **(M)** review; commit the
-  `real_*` examples with baseline-derived bars. Maintainer confirms or revises §6
-  targets. No `app/` change.
-- **CP1 — Ingestion parity.** `_clean_text` line structure; line-break → sentence
+  `real_baseline.json`. Maintainer confirms or revises §6 targets. The only `app/`
+  changes are behavior-preserving: `google_api.get_message_raw`/`clean_body` and moving
+  the worker's fresh-token helper to `gmail_service.call_with_fresh_token`.
+- **CP1 — Ingestion parity.** `_clean_text` line structure; paragraph break → sentence
   boundary after preprocessing; subject normalization.
-- **CP2 — Sender resolution.** `sender.py`, `tldextract` dependency (offline), platform/
-  job-board/freemail/generic tables, casing from text, invariant tests.
+- **CP2 — Sender resolution + committed subset.** `sender.py`, `tldextract` dependency
+  (offline), platform/job-board/freemail/generic tables, casing from text, invariant
+  tests. Then pseudonymize + `check_leaks` + **(M)** review, and commit the `real_*`
+  examples with bars. (Moved here from CP0 during planning: pseudonymizing needs
+  `sender.py` to find the domain labels to replace, and committed bodies should have
+  CP1's line structure so they match what production feeds the classifier.)
 - **CP3 — Extraction.** `Recipient` interface change through pipeline, worker and
   evaluation; name-bleed trim; subject-line templates; provenance.
 - **CP4 — Relatedness & status.** Pattern-table changes from dev misses.
