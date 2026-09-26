@@ -17,3 +17,7 @@ frontend/dist/
 
 # Misc
 *.log
+
+# Phase 11 — private real-mail evaluation data lives OUTSIDE the repo
+# (~/.job-tracker-eval by default); this is only a backstop.
+backend/evaluation/private/
