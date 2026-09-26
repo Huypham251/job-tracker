@@ -21,7 +21,7 @@ plus 3 more added in Phase 7 across ambiguous/sender_variation/messy_phrasing).
 """
 
 from app.classifier.extractor import RuleBasedExtractor
-from evaluation.run_eval import CONFIDENCE_THRESHOLD, evaluate, load_dataset
+from evaluation.run_eval import CONFIDENCE_THRESHOLD, evaluate, load_dataset, synthetic_examples
 
 MIN_CLASSIFICATION_ACCURACY = 0.98  # currently 91/91=1.0; tolerates 90/91=0.989; fails at 89/91=0.978
 MIN_STATUS_ACCURACY = 0.98  # currently 73/73=1.0; tolerates 72/73=0.986; fails at 71/73=0.973
@@ -32,7 +32,7 @@ MIN_AUTO_APPLY_RATE = 0.40  # a floor: confirms Phase 7's fixes didn't silently 
 
 
 def test_classification_accuracy_meets_minimum_bar() -> None:
-    report = evaluate(RuleBasedExtractor(), load_dataset())["overall"]
+    report = evaluate(RuleBasedExtractor(), synthetic_examples(load_dataset()))["overall"]
 
     assert report["classification_accuracy"] >= MIN_CLASSIFICATION_ACCURACY, (
         f"classification accuracy {report['classification_accuracy']:.2f} fell below "
@@ -54,7 +54,7 @@ def test_precision_at_threshold_and_auto_apply_rate_meet_minimum_bar() -> None:
     directly (spec §6) — kept as a separate test from classification/extraction
     accuracy above so a failure message immediately says which kind of regression
     happened."""
-    report = evaluate(RuleBasedExtractor(), load_dataset())["overall"]
+    report = evaluate(RuleBasedExtractor(), synthetic_examples(load_dataset()))["overall"]
 
     assert report["precision_at_threshold"] >= MIN_PRECISION_AT_THRESHOLD, (
         f"precision_at_threshold {report['precision_at_threshold']:.2f} fell below "
