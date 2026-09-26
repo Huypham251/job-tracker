@@ -4,8 +4,10 @@ import pytest
 from cryptography.fernet import Fernet
 
 from app.gmail import google_api, service
+from app.gmail import service as gmail_service
 from app.gmail.crypto import decrypt_token, encrypt_token
 from app.gmail.exceptions import GmailNotConnected, GmailReauthRequired
+from app.gmail.google_api import GmailAuthError
 from app.gmail.models import GmailConnection
 
 FAKE_TOKEN = {
@@ -264,3 +266,28 @@ def test_list_recent_messages_flags_reauth_and_raises(db_session, user, monkeypa
         service.list_recent_messages(db_session, user.id, 5)
     db_session.refresh(connection)
     assert connection.reauth_required_at is not None
+
+
+def test_call_with_fresh_token_forces_one_refresh_on_a_401(monkeypatch) -> None:
+    monkeypatch.setattr(gmail_service, "get_valid_access_token", lambda db, c: "stale")
+    monkeypatch.setattr(gmail_service, "force_refresh_access_token", lambda db, c: "fresh")
+    tokens: list[str] = []
+
+    def call(token: str) -> str:
+        tokens.append(token)
+        if token == "stale":
+            raise GmailAuthError("message fetch failed: HTTP 401", status_code=401)
+        return "ok"
+
+    assert gmail_service.call_with_fresh_token(None, None, call) == "ok"
+    assert tokens == ["stale", "fresh"]
+
+
+def test_call_with_fresh_token_does_not_retry_a_revoked_grant(monkeypatch) -> None:
+    monkeypatch.setattr(gmail_service, "get_valid_access_token", lambda db, c: "t")
+
+    def call(token: str) -> str:
+        raise GmailAuthError("token refresh failed: invalid_grant")
+
+    with pytest.raises(GmailAuthError):
+        gmail_service.call_with_fresh_token(None, None, call)

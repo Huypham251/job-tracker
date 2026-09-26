@@ -326,3 +326,33 @@ def test_network_errors_become_google_api_errors_without_a_status(monkeypatch, e
             call()
         assert exc_info.value.status_code is None
         assert "gmail.googleapis.com" not in str(exc_info.value)
+
+
+def test_get_message_raw_returns_the_uncleaned_part_and_its_mime_type(monkeypatch) -> None:
+    raw = "<p>Thanks for applying to Acme.</p>"
+    payload = {
+        "payload": {
+            "mimeType": "text/html",
+            "body": {"data": _b64(raw)},
+            "headers": [{"name": "Subject", "value": "Hello"}],
+        }
+    }
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
+    summary, mime_type, text = google_api.get_message_raw("token", "m1")
+    assert (summary["subject"], mime_type, text) == ("Hello", "text/html", raw)
+
+
+def test_clean_body_matches_what_get_message_returns(monkeypatch) -> None:
+    raw = "<html><body><p>Hello <b>World</b></p><p>Second</p></body></html>"
+    payload = {"payload": {"mimeType": "text/html", "body": {"data": _b64(raw)}}}
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
+    _, mime_type, text = google_api.get_message_raw("token", "m1")
+    assert google_api.clean_body(text, mime_type) == google_api.get_message("token", "m1")[1]
+
+
+def test_get_message_raw_without_a_text_part(monkeypatch) -> None:
+    payload = {"payload": {"mimeType": "image/png", "body": {"data": _b64("binary")}}}
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
+    _, mime_type, text = google_api.get_message_raw("token", "m1")
+    assert (mime_type, text) == (None, "")
+    assert google_api.clean_body(text, mime_type) == ""

@@ -1,5 +1,7 @@
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from typing import TypeVar
 from uuid import UUID
 
 from cryptography.fernet import InvalidToken
@@ -14,6 +16,8 @@ from app.gmail.exceptions import GmailNotConnected, GmailReauthRequired
 from app.gmail.models import GmailConnection
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 # Refresh a minute before the stored access token actually expires, rather
 # than racing expiry mid-request.
@@ -127,6 +131,21 @@ def _refresh_access_token(db: Session, connection: GmailConnection) -> str:
     db.commit()
     db.refresh(connection)
     return token["access_token"]
+
+
+def call_with_fresh_token(db: Session, connection: GmailConnection, call: Callable[[str], T]) -> T:
+    """Runs a Gmail call with a valid access token (checked before every call, not
+    once per page: a page of new messages can outlast the token's last minute). A
+    401 still gets one forced refresh and retry before it counts as a revoked grant
+    — the token may have expired mid-call, or a reconnect may have replaced the
+    grant. GmailAuthError out of here means reconnect. (Moved from the sync worker
+    in Phase 11 so the evaluation export and the re-evaluation command share it.)"""
+    try:
+        return call(get_valid_access_token(db, connection))
+    except google_api.GmailAuthError as exc:
+        if exc.status_code != 401:
+            raise
+    return call(force_refresh_access_token(db, connection))
 
 
 def list_recent_messages(db: Session, user_id: UUID, limit: int) -> list[dict]:

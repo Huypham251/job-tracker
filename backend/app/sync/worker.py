@@ -101,20 +101,6 @@ def _describe_failure(exc: GoogleApiError) -> str:
     return "network error" if exc.status_code is None else f"HTTP {exc.status_code}"
 
 
-def _call_with_fresh_token(db: Session, connection: GmailConnection, call):
-    """Runs a Gmail call with a valid access token (checked before every call,
-    not once per page: a page of new messages can outlast the token's last
-    minute). A 401 still gets one forced refresh and retry before it counts as
-    a revoked grant — the token may have expired mid-call, or a reconnect may
-    have replaced the grant. GmailAuthError out of here means reconnect."""
-    try:
-        return call(gmail_service.get_valid_access_token(db, connection))
-    except GmailAuthError as exc:
-        if exc.status_code != 401:
-            raise
-    return call(gmail_service.force_refresh_access_token(db, connection))
-
-
 def _fetch_message(db: Session, connection: GmailConnection, message_id: str) -> tuple[dict, str]:
     """get_message with one in-place retry for a transient failure (429, 5xx,
     network). A message skipped here is never written to ProcessedMessage, so
@@ -124,14 +110,14 @@ def _fetch_message(db: Session, connection: GmailConnection, message_id: str) ->
         return google_api.get_message(token, message_id)
 
     try:
-        return _call_with_fresh_token(db, connection, fetch)
+        return gmail_service.call_with_fresh_token(db, connection, fetch)
     except GmailAuthError:
         raise
     except GoogleApiError as exc:
         if not _is_transient(exc):
             raise
         time.sleep(PER_MESSAGE_RETRY_SECONDS)
-        return _call_with_fresh_token(db, connection, fetch)
+        return gmail_service.call_with_fresh_token(db, connection, fetch)
 
 
 def _safe_error_message(exc: Exception) -> str:
@@ -280,7 +266,7 @@ def process_job(
     try:
         while True:
             page_token = job.page_token
-            message_ids, next_page_token = _call_with_fresh_token(
+            message_ids, next_page_token = gmail_service.call_with_fresh_token(
                 db,
                 connection,
                 lambda token: google_api.list_message_ids_page(

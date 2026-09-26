@@ -204,12 +204,33 @@ def _clean_text(raw: str, *, is_html: bool) -> str:
     return text[:BODY_MAX_CHARS]
 
 
+def clean_body(raw: str, mime_type: str | None) -> str:
+    """The text the classifier sees, from a decoded text part. Public so the Phase 11
+    evaluation harness cleans private real examples exactly as production does."""
+    if not raw:
+        return ""
+    return _clean_text(raw, is_html=(mime_type == "text/html"))
+
+
 def _body_from_payload(payload: dict) -> str:
     found = _find_text_part(payload.get("payload", {}))
     if found is None:
         return ""
     mime_type, text = found
-    return _clean_text(text, is_html=(mime_type == "text/html"))
+    return clean_body(text, mime_type)
+
+
+def _fetch_full(access_token: str, message_id: str) -> dict:
+    response = _send(
+        "get",
+        f"{GMAIL_API_BASE}/messages/{message_id}",
+        "message fetch",
+        headers={"Authorization": f"Bearer {access_token}"},
+        params={"format": "full"},
+        timeout=_TIMEOUT,
+    )
+    _raise_for_status(response, "message fetch")
+    return response.json()
 
 
 def get_message(access_token: str, message_id: str) -> tuple[dict, str]:
@@ -221,14 +242,15 @@ def get_message(access_token: str, message_id: str) -> tuple[dict, str]:
     minimized: cleaned plain text only, truncated, never the raw MIME
     structure or attachments, and the body itself is never persisted
     (Phase 4 spec §11)."""
-    response = _send(
-        "get",
-        f"{GMAIL_API_BASE}/messages/{message_id}",
-        "message fetch",
-        headers={"Authorization": f"Bearer {access_token}"},
-        params={"format": "full"},
-        timeout=_TIMEOUT,
-    )
-    _raise_for_status(response, "message fetch")
-    payload = response.json()
+    payload = _fetch_full(access_token, message_id)
     return _summary_from_payload(payload, message_id), _body_from_payload(payload)
+
+
+def get_message_raw(access_token: str, message_id: str) -> tuple[dict, str | None, str]:
+    """Local Phase 11 evaluation export only: the chosen text part BEFORE cleaning,
+    with its MIME type, so the evaluation set re-runs whatever clean_body() does at
+    the time. Never used by the sync worker or the API."""
+    payload = _fetch_full(access_token, message_id)
+    found = _find_text_part(payload.get("payload", {}))
+    mime_type, raw = found if found is not None else (None, "")
+    return _summary_from_payload(payload, message_id), mime_type, raw
